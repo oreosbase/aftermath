@@ -1,16 +1,16 @@
 <!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AFTERMATH data test</title>
+<title>AFTERMATH data test 2</title>
 <style>
 body{font-family:sans-serif;background:#0b0b0f;color:#eee;padding:16px}
 input,button{width:100%;padding:14px;margin:6px 0;font-size:16px;border-radius:8px;border:0;box-sizing:border-box}
-button{background:#4ade80;font-weight:bold}
+button{background:#4ade80;font-weight:bold;color:#000}
 pre{white-space:pre-wrap;word-break:break-word;font-size:13px}
 </style></head><body>
-<h2>AFTERMATH data test</h2>
+<h2>AFTERMATH data test 2</h2>
 <input id="a" placeholder="Paste a Base wallet address (0x...)">
-<button onclick="run()">Run test</button>
+<button id="b" onclick="run()">Run test</button>
 <pre id="o"></pre>
 <script>
 const out=m=>{document.getElementById('o').textContent+=m+'\n'};
@@ -30,27 +30,44 @@ async function rpc(url,method,params){
   if(j.error)throw new Error(j.error.message);
   return j.result;
 }
+const APPROVAL='0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925';
+let running=false;
 async function run(){
+  if(running)return; running=true;
+  document.getElementById('b').disabled=true;
   document.getElementById('o').textContent='';
   const addr=document.getElementById('a').value.trim().toLowerCase();
-  if(!/^0x[0-9a-f]{40}$/.test(addr)){out('Not a valid address');return}
+  if(!/^0x[0-9a-f]{40}$/.test(addr)){out('Not a valid address');running=false;document.getElementById('b').disabled=false;return}
+  const pad='0'.repeat(24)+addr.slice(2);
   const base='https://base.blockscout.com/api/v2/addresses/'+addr;
-  await t('Blockscout transactions',async()=>(await get(base+'/transactions')).items.length+' found');
-  await t('Blockscout token transfers',async()=>(await get(base+'/token-transfers')).items.length+' found');
-  const topic='0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925';
-  const owner='0x'+'0'.repeat(24)+addr.slice(2);
-  const urls=['https://mainnet.base.org','https://base-rpc.publicnode.com','https://1rpc.io/base'];
-  for(const u of urls){
-    await t('RPC recent approvals '+u,async()=>{
-      const head=parseInt(await rpc(u,'eth_blockNumber',[]),16);
-      const logs=await rpc(u,'eth_getLogs',[{fromBlock:'0x'+(head-9000).toString(16),toBlock:'latest',topics:[topic,owner]}]);
-      return logs.length+' found';
-    });
-    await t('RPC full-history approvals '+u,async()=>{
-      const logs=await rpc(u,'eth_getLogs',[{fromBlock:'0x0',toBlock:'latest',topics:[topic,owner]}]);
-      return logs.length+' found';
+
+  await t('A Blockscout approval logs',async()=>{
+    const j=await get('https://base.blockscout.com/api?module=logs&action=getLogs&fromBlock=0&toBlock=latest&topic0='+APPROVAL+'&topic1=0x'+pad+'&topic0_1_opr=and');
+    if(!Array.isArray(j.result))throw new Error(JSON.stringify(j).slice(0,160));
+    return j.result.length+' approval events found';
+  });
+
+  await t('B approve calls in transactions',async()=>{
+    const j=await get(base+'/transactions');
+    const sent=j.items.filter(x=>x.from&&x.from.hash.toLowerCase()===addr);
+    const names=['approve','setApprovalForAll','increaseAllowance','permit'];
+    const ap=sent.filter(x=>names.includes(x.method));
+    let extra='';
+    if(ap[0]&&ap[0].decoded_input)extra=' | first: '+ap[0].method+' '+JSON.stringify(ap[0].decoded_input.parameters).slice(0,150);
+    return sent.length+' sent, '+ap.length+' approval calls'+extra;
+  });
+
+  const usdc='0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+  const permit2='000000000022D473030F116dDEE9F6B43aC78BA3'.toLowerCase();
+  const data='0xdd62ed3e'+pad+'0'.repeat(24)+permit2;
+  for(const u of ['https://mainnet.base.org','https://base-rpc.publicnode.com','https://1rpc.io/base']){
+    await t('C live allowance check '+u,async()=>{
+      const r=await rpc(u,'eth_call',[{to:usdc,data},'latest']);
+      return 'USDC allowance to Permit2 = '+BigInt(r).toString();
     });
   }
   out('Done.');
+  running=false;
+  document.getElementById('b').disabled=false;
 }
 </script></body></html>
