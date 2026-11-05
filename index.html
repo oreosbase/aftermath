@@ -222,6 +222,7 @@ async function run(){
     const trHashes=new Set(tr.items.map(x=>lc(x.transaction_hash||x.tx_hash)));
     const hasRate=tr.items.some(x=>x.token&&('exchange_rate' in x.token));
     const apTokens=new Set(all.map(a=>a.token));
+    const isPriced=tk=>!hasRate||(tk.exchange_rate!=null&&Number(tk.exchange_rate)>0);
     tx.items.forEach(x=>{
       const from=lc(x.from&&x.from.hash),to=lc(x.to&&x.to.hash),h=lc(x.hash);
       if(from===owner)ownTx.add(h);
@@ -239,9 +240,9 @@ async function run(){
       const out=from===owner;
       const nft=/721|1155/.test(tk.type||'');
       const amt=nft?'NFT'+(x.total&&x.total.token_id?' #'+String(x.total.token_id).slice(0,12):''):fmt(x.total&&x.total.value,x.total&&x.total.decimals||tk.decimals);
-      const priced=!hasRate||(tk.exchange_rate!=null&&Number(tk.exchange_rate)>0);
-      const spam=!priced&&!apTokens.has(taddr);
-      const ev={t,hash,out,other:out?to:from,what:(out?'sent ':'received ')+amt+' '+(tk.symbol||tk.name||'token'),token:taddr,sym:tk.symbol||tk.name||'token',amt,spam};
+      const zero=!nft&&(x.total==null||x.total.value==null||/^0+$/.test(String(x.total.value)));
+      const spam=zero||(!isPriced(tk)&&!apTokens.has(taddr));
+      const ev={t,hash,out,other:out?to:from,what:(out?'sent ':'received ')+amt+' '+(tk.symbol||tk.name||'token'),token:taddr,sym:tk.symbol||tk.name||'token',amt,spam,zero};
       events.push(ev);
       if(out&&isEOA&&hash&&!ownTx.has(lc(hash))&&t>=coverFrom){if(spam)spoof++;else outs.push(ev)}
     });
@@ -253,21 +254,29 @@ async function run(){
         const j=await get('/api/v2/transactions/'+ev.hash);
         ev.initiator=lc(j.from&&j.from.hash);ev.via=lc(j.to&&j.to.hash);
         ev.link=all.find(a=>(a.spender===ev.initiator||a.spender===ev.via)&&a.ts<=ev.t&&a.token===ev.token);
-      }catch(e){}
+      }catch(e){return}
+      if(ev.initiator===owner)return;
+      const inTr=tr.items.some(x=>lc(x.transaction_hash||x.tx_hash)===lc(ev.hash)&&lc(x.to&&x.to.hash)===owner&&lc(x.from&&x.from.hash)!==owner&&isPriced(x.token||{})&&x.total&&x.total.value&&!/^0+$/.test(String(x.total.value)));
+      try{
+        const k=await get('/api/v2/transactions/'+ev.hash+'/internal-transactions');
+        ev.paid=inTr||(k.items||[]).some(y=>lc(y.to&&y.to.hash)===owner&&y.value&&y.value!=='0');
+      }catch(e){ev.paid=inTr?true:undefined}
     });
     mark('link','ok');
     const tp=flagged.filter(e=>e.initiator&&e.initiator!==owner);
-    const unverified=flagged.filter(e=>!e.initiator).length;
-    const linked=tp.filter(e=>e.link);
-    const evl=tp.length?'<div class="evl">'+tp.slice(0,5).map(e=>'<div>'+esc(e.what)+' · '+esc(dt(e.t))+' · started by <span class="mono">'+esc(short(e.initiator))+'</span> · '+txLink(e.hash)+'</div>').join('')+'</div>':'';
+    const paidTx=tp.filter(e=>e.paid===true);
+    const suspect=tp.filter(e=>e.paid===false);
+    const unverified=flagged.filter(e=>!e.initiator).length+tp.filter(e=>e.paid===undefined).length;
+    const linked=suspect.filter(e=>e.link);
+    const evl=suspect.length?'<div class="evl">'+suspect.slice(0,5).map(e=>'<div>'+esc(e.what)+' · '+esc(dt(e.t))+' · started by <span class="mono">'+esc(short(e.initiator))+'</span> · '+txLink(e.hash)+'</div>').join('')+'</div>':'';
     let F;
     if(info&&info.is_contract===true){
       F={cls:'warn',title:'Smart contract wallet',html:'This address is a smart contract wallet. We can\'t reliably tell self-sent from relayed transactions here, so we are not flagging transfers. Review the permissions below.'};
     }else if(linked.length){
       const e=linked[0];
       F={cls:'bad',title:'Approval abuse detected',html:'On '+esc(dt(e.link.ts))+' you approved <b>'+esc(short(e.link.spender))+'</b> to use '+esc(e.sym)+'. Later, a transaction started by '+(e.link.spender===e.initiator?'that address':'a contract tied to it')+' moved '+esc(e.amt)+' '+esc(e.sym)+' out of your wallet ('+esc(dt(e.t))+', tx '+esc(short(e.hash))+').'+(linked.length>1?' We found '+linked.length+' transfers like this.':'')+evl};
-    }else if(tp.length){
-      F={cls:'bad',title:'Unexplained transfers',html:tp.length+' of the '+flagged.length+' most recent priced transfers we checked'+(outs.length>flagged.length?' (out of '+outs.length+')':'')+' were started by a different address than yours. That can happen through an approval you gave. We could not link them to a specific approval, so we are not naming a culprit.'+evl};
+    }else if(suspect.length){
+      F={cls:'bad',title:'Unexplained transfers',html:suspect.length+' of the '+flagged.length+' most recent priced transfers we checked'+(outs.length>flagged.length?' (out of '+outs.length+')':'')+' were started by a different address than yours, with no payment to you in the same transaction. That can happen through an approval you gave. We could not link them to a specific approval, so we are not naming a culprit.'+evl};
     }else if(active.some(a=>a.risk.level==='HIGH')){
       F={cls:'warn',title:'High-risk permissions active',html:'We found no transfers that look taken without you, but some permissions are still active and look risky (below).'};
     }else if(approvalsOK){
@@ -275,9 +284,10 @@ async function run(){
     }else{
       F={cls:'warn',title:'Incomplete check',html:'We could not load your approval history, so this check is incomplete. See the notes at the bottom.'};
     }
+    if(paidTx.length)F.html+='<p>'+paidTx.length+' transfer'+(paidTx.length===1?'':'s')+' started by other addresses came with a payment to you in the same transaction (this looks like a sale or swap), so we did not flag '+(paidTx.length===1?'it':'them')+'.</p>';
     if(unverified)F.html+='<p>We could not double-check '+unverified+' transfer(s) because the data service was busy.</p>';
-    if(spoof)F.html+='<p><b>Heads up:</b> we saw '+spoof+' transfer'+(spoof===1?'':'s')+' of unpriced, look-alike tokens that appear to come from your address, but none were sent by your wallet. This is usually address poisoning or spam. Never copy an address from your transaction history.</p>';
-    S={mode:S.mode,showSpam:false,owner,F,active,revoked,events,outs:tp,linked,diag,approvalsOK,spoof,spamCount:events.filter(e=>e.spam).length,more:tx.more||tr.more,capped:all.filter(a=>a.value>0n).length>40};
+    if(spoof)F.html+='<p><b>Heads up:</b> we saw '+spoof+' transfer'+(spoof===1?'':'s')+' of zero-value, unpriced or look-alike tokens that appear to come from your address, but none were sent by your wallet. This is usually address poisoning or spam. Never copy an address from your transaction history.</p>';
+    S={mode:S.mode,showSpam:false,owner,F,active,revoked,events,outs:suspect,linked,diag,approvalsOK,spoof,spamCount:events.filter(e=>e.spam).length,more:tx.more||tr.more,capped:all.filter(a=>a.value>0n).length>40};
     S.report=buildReport();
     render();
   }catch(e){
@@ -332,7 +342,7 @@ function buildReport(){
   S.active.forEach(a=>L.push('- ['+a.risk.level+'] token '+a.token+' -> spender '+a.spender+' ('+nameOf(a)+') · '+amountText(a)+' · approved '+dt(a.ts)+' · tx '+a.tx));
   L.push('','TRANSFERS OUT NOT STARTED BY THIS WALLET ('+S.outs.length+')');
   S.outs.forEach(e=>L.push('- '+dt(e.t)+' · '+e.what+' · to '+e.other+' · started by '+e.initiator+' · tx '+e.hash+(e.link?' · LINKED to approval of '+e.link.spender:'')));
-  if(S.spoof)L.push('','NOTE: '+S.spoof+' look-alike or unpriced token transfers appear to come from this address but were not sent by it (likely address poisoning or spam).');
+  if(S.spoof)L.push('','NOTE: '+S.spoof+' zero-value, unpriced or look-alike token transfers appear to come from this address but were not sent by it (likely address poisoning or spam).');
   L.push('','RECENT ACTIVITY');
   S.events.filter(e=>!e.spam).slice(0,40).forEach(e=>L.push('- '+dt(e.t)+' · '+(e.out?'OUT':'IN')+' · '+e.what+' · '+(e.out?'to ':'from ')+e.other+' · tx '+e.hash));
   L.push('','Limits: public Base data only; recent history may be incomplete. This report does not prove who is responsible.');
@@ -354,10 +364,10 @@ function tlHTML(){
   let h='<div class="list">';
   if(!list.length)h+='<div class="mut">Nothing to show.</div>';
   list.slice(0,40).forEach(e=>{
-    h+='<div class="row"><b>'+(e.out?'OUT':'IN')+'</b> '+esc(e.what)+(e.spam?' <span class="pill SPAM">UNPRICED</span>':'')+(e.failed?' <span class="mut">(failed)</span>':'')+'<div class="mut">'+esc(dt(e.t))+' · '+(e.out?'to ':'from ')+'<span class="mono">'+esc(short(e.other))+'</span> · '+txLink(e.hash)+'</div></div>';
+    h+='<div class="row"><b>'+(e.out?'OUT':'IN')+'</b> '+esc(e.what)+(e.spam?' <span class="pill SPAM">'+(e.zero?'ZERO VALUE':'UNPRICED')+'</span>':'')+(e.failed?' <span class="mut">(failed)</span>':'')+'<div class="mut">'+esc(dt(e.t))+' · '+(e.out?'to ':'from ')+'<span class="mono">'+esc(short(e.other))+'</span> · '+txLink(e.hash)+'</div></div>';
   });
   h+='</div>';
-  if(S.spamCount)h+='<button class="ghost" onclick="toggleSpam()">'+(S.showSpam?'Hide ':'Show ')+S.spamCount+' unpriced or look-alike token transfers</button>';
+  if(S.spamCount)h+='<button class="ghost" onclick="toggleSpam()">'+(S.showSpam?'Hide ':'Show ')+S.spamCount+' zero-value, unpriced or look-alike transfers</button>';
   if(S.more)h+='<p class="hint">Older history exists that we did not load.</p>';
   return h;
 }
