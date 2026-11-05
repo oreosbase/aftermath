@@ -1,73 +1,292 @@
 <!DOCTYPE html>
-<html><head><meta charset="utf-8">
+<html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AFTERMATH data test 2</title>
+<title>AFTERMATH</title>
 <style>
-body{font-family:sans-serif;background:#0b0b0f;color:#eee;padding:16px}
-input,button{width:100%;padding:14px;margin:6px 0;font-size:16px;border-radius:8px;border:0;box-sizing:border-box}
-button{background:#4ade80;font-weight:bold;color:#000}
-pre{white-space:pre-wrap;word-break:break-word;font-size:13px}
+:root{--bg:#0b0b0f;--card:#15151c;--line:#26262f;--tx:#eee;--mut:#9a9aa8;--ok:#4ade80;--hi:#f87171;--md:#fbbf24;--lo:#60a5fa}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:640px;font-family:-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--tx);padding:16px;line-height:1.45}
+h1{margin:8px 0 2px;letter-spacing:3px}
+.sub{color:var(--mut);margin:0 0 14px;font-size:14px}
+input,button{width:100%;padding:14px;font-size:16px;border-radius:10px;border:0;margin:6px 0}
+input{background:#fff;color:#000}
+button{background:var(--ok);color:#000;font-weight:700}
+button:disabled{opacity:.5}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+.card h3{margin:0 0 8px;font-size:13px;letter-spacing:1px;text-transform:uppercase;color:var(--mut)}
+.pill{display:inline-block;padding:1px 8px;border-radius:99px;font-size:11px;font-weight:700;color:#000}
+.HIGH{background:var(--hi)}.MEDIUM{background:var(--md)}.LOW{background:var(--lo)}
+.row{border-top:1px solid var(--line);padding:10px 0;font-size:14px;word-break:break-word}
+.row.first{border-top:0}
+.mut{color:var(--mut);font-size:13px}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px}
+.chips button{width:auto;flex:1 1 30%;font-size:13px;padding:10px;background:#2a2a35;color:var(--tx)}
+.chips button.on{background:var(--ok);color:#000}
+ol{padding-left:20px;margin:6px 0}li{margin:9px 0;font-size:14px}
+pre{white-space:pre-wrap;word-break:break-word;font-size:12px;color:var(--mut);max-height:240px;overflow:auto}
+a{color:var(--lo)}
+.find{border-left:4px solid var(--md)}.find.bad{border-left-color:var(--hi)}.find.good{border-left-color:var(--ok)}
+.warn{color:var(--md);font-size:13px}
 </style></head><body>
-<h2>AFTERMATH data test 2</h2>
-<input id="a" placeholder="Paste a Base wallet address (0x...)">
-<button id="b" onclick="run()">Run test</button>
-<pre id="o"></pre>
+<h1>AFTERMATH</h1>
+<p class="sub">Just got scammed or drained? Paste your public Base address. We only read public data. Never type a seed phrase or private key here or anywhere else.</p>
+<input id="addr" placeholder="Wallet address (0x...)" autocomplete="off" autocapitalize="off" spellcheck="false">
+<button id="go" onclick="run()">Investigate</button>
+<div id="status" class="mut"></div>
+<div id="out"></div>
 <script>
-const out=m=>{document.getElementById('o').textContent+=m+'\n'};
-async function t(name,fn){
-  try{out('OK   '+name+': '+await fn())}
-  catch(e){out('FAIL '+name+': '+e.message)}
-}
-async function get(url){
-  const r=await fetch(url);
+const $=id=>document.getElementById(id);
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const BS='https://base.blockscout.com';
+const RPCS=['https://mainnet.base.org','https://base-rpc.publicnode.com','https://1rpc.io/base'];
+const APPROVAL='0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925';
+const APPALL='0x17307eab39ab6107e8899845ad3d59bd9653f200f220920489ca2b5937696c31';
+const PERMIT2='0x000000000022d473030f116ddee9f6b43ac78ba3';
+const MAX=2n**255n;
+let S={mode:'unsure'};
+const short=a=>a?a.slice(0,6)+'…'+a.slice(-4):'?';
+const dt=ts=>ts?new Date(ts*1000).toISOString().slice(0,16).replace('T',' ')+' UTC':'unknown time';
+const pad=a=>'0'.repeat(24)+a.slice(2).toLowerCase();
+const lc=s=>(s||'').toLowerCase();
+function fmt(v,d){try{v=BigInt(v);d=Number(d||0);const s=v.toString().padStart(d+1,'0');const i=s.slice(0,s.length-d);const f=s.slice(s.length-d).replace(/0+$/,'').slice(0,6);return i+(f?'.'+f:'')}catch(e){return '?'}}
+async function get(path){
+  const r=await fetch(path.startsWith('http')?path:BS+path);
   if(!r.ok)throw new Error('HTTP '+r.status);
   return r.json();
 }
-async function rpc(url,method,params){
-  const r=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},
-    body:JSON.stringify({jsonrpc:'2.0',id:1,method,params})});
-  const j=await r.json();
-  if(j.error)throw new Error(j.error.message);
+async function pages(path,max){
+  let items=[],q='',more=false;
+  for(let i=0;i<max;i++){
+    const j=await get(path+(q?(path.includes('?')?'&':'?')+q:''));
+    items=items.concat(j.items||[]);
+    if(j.next_page_params){q=new URLSearchParams(j.next_page_params).toString();more=true}else{more=false;break}
+  }
+  return {items,more};
+}
+async function ethCall(to,data){
+  let err;
+  for(const u of RPCS){
+    try{
+      const r=await fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'eth_call',params:[{to,data},'latest']})});
+      const j=await r.json();
+      if(j.error)throw new Error(j.error.message);
+      return j.result;
+    }catch(e){err=e}
+  }
+  throw err;
+}
+async function getLogs(topic0,owner){
+  const j=await get('/api?module=logs&action=getLogs&fromBlock=0&toBlock=latest&topic0='+topic0+'&topic1=0x'+pad(owner)+'&topic0_1_opr=and');
+  if(!Array.isArray(j.result))throw new Error('unexpected reply');
   return j.result;
 }
-const APPROVAL='0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925';
-let running=false;
-async function run(){
-  if(running)return; running=true;
-  document.getElementById('b').disabled=true;
-  document.getElementById('o').textContent='';
-  const addr=document.getElementById('a').value.trim().toLowerCase();
-  if(!/^0x[0-9a-f]{40}$/.test(addr)){out('Not a valid address');running=false;document.getElementById('b').disabled=false;return}
-  const pad='0'.repeat(24)+addr.slice(2);
-  const base='https://base.blockscout.com/api/v2/addresses/'+addr;
-
-  await t('A Blockscout approval logs',async()=>{
-    const j=await get('https://base.blockscout.com/api?module=logs&action=getLogs&fromBlock=0&toBlock=latest&topic0='+APPROVAL+'&topic1=0x'+pad+'&topic0_1_opr=and');
-    if(!Array.isArray(j.result))throw new Error(JSON.stringify(j).slice(0,160));
-    return j.result.length+' approval events found';
-  });
-
-  await t('B approve calls in transactions',async()=>{
-    const j=await get(base+'/transactions');
-    const sent=j.items.filter(x=>x.from&&x.from.hash.toLowerCase()===addr);
-    const names=['approve','setApprovalForAll','increaseAllowance','permit'];
-    const ap=sent.filter(x=>names.includes(x.method));
-    let extra='';
-    if(ap[0]&&ap[0].decoded_input)extra=' | first: '+ap[0].method+' '+JSON.stringify(ap[0].decoded_input.parameters).slice(0,150);
-    return sent.length+' sent, '+ap.length+' approval calls'+extra;
-  });
-
-  const usdc='0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
-  const permit2='000000000022D473030F116dDEE9F6B43aC78BA3'.toLowerCase();
-  const data='0xdd62ed3e'+pad+'0'.repeat(24)+permit2;
-  for(const u of ['https://mainnet.base.org','https://base-rpc.publicnode.com','https://1rpc.io/base']){
-    await t('C live allowance check '+u,async()=>{
-      const r=await rpc(u,'eth_call',[{to:usdc,data},'latest']);
-      return 'USDC allowance to Permit2 = '+BigInt(r).toString();
-    });
-  }
-  out('Done.');
-  running=false;
-  document.getElementById('b').disabled=false;
+async function chunked(list,n,fn){
+  for(let i=0;i<list.length;i+=n)await Promise.all(list.slice(i,i+n).map(fn));
 }
-</script></body></html>
+function parseApprovals(l20,lAll){
+  const evs=[];
+  const add=(l,kind)=>{
+    const t=(l.topics||[]).filter(Boolean);
+    if(t.length<3)return;
+    if(kind==='erc20'&&t.length!==3)return;
+    const data=(l.data&&l.data!=='0x')?BigInt(l.data):0n;
+    evs.push({kind,token:lc(l.address),spender:'0x'+t[2].slice(26).toLowerCase(),value:kind==='all'?(data>0n?1n:0n):data,ts:Number(l.timeStamp||0),block:Number(l.blockNumber||0),idx:Number(l.logIndex||0),tx:l.transactionHash||''});
+  };
+  l20.forEach(l=>add(l,'erc20'));lAll.forEach(l=>add(l,'all'));
+  evs.sort((a,b)=>a.block-b.block||a.idx-b.idx);
+  const m={};
+  evs.forEach(e=>{m[e.kind+'|'+e.token+'|'+e.spender]=e});
+  return Object.values(m);
+}
+function riskOf(a){
+  const info=a.sInfo;let level='LOW';const why=[];
+  const unl=a.kind==='erc20'&&a.cur>=MAX;
+  if(a.kind==='all'){level='MEDIUM';why.push('can move ALL items in this collection')}
+  else if(unl){level='MEDIUM';why.push('unlimited spending permission')}
+  if(a.spender===PERMIT2){why.push('Permit2 is a common, widely used contract')}
+  else if(!info){why.push('could not check who this address is')}
+  else if(!info.is_contract){level='HIGH';why.push('spender is a regular wallet, not an app contract')}
+  else if(!info.is_verified){level='HIGH';why.push('spender contract is not verified')}
+  if(!why.length)why.push('limited permission to a verified contract');
+  return {level,why,unl};
+}
+async function run(){
+  const owner=lc($('addr').value.trim());
+  if(!/^0x[0-9a-f]{40}$/.test(owner)){$('status').textContent='That does not look like a valid address (0x followed by 40 characters).';return}
+  $('go').disabled=true;$('out').innerHTML='';
+  const diag=[];
+  const step=async(name,fn,d)=>{$('status').textContent=name+'…';try{return await fn()}catch(e){diag.push(name+' ('+e.message+')');return d}};
+  try{
+    const info=await step('Checking wallet',()=>get('/api/v2/addresses/'+owner),null);
+    const isEOA=!!info&&info.is_contract===false;
+    const tx=await step('Loading transactions',()=>pages('/api/v2/addresses/'+owner+'/transactions',3),{items:[],more:false});
+    const tr=await step('Loading token transfers',()=>pages('/api/v2/addresses/'+owner+'/token-transfers',3),{items:[],more:false});
+    const l20=await step('Loading approval history',()=>getLogs(APPROVAL,owner),null);
+    const lAll=await step('Loading collection approvals',()=>getLogs(APPALL,owner),null);
+    const approvalsOK=l20!==null&&lAll!==null;
+    const all=approvalsOK?parseApprovals(l20,lAll):[];
+    const cands=all.filter(a=>a.value>0n).sort((a,b)=>b.ts-a.ts).slice(0,40);
+    $('status').textContent='Checking live permissions…';
+    await chunked(cands,4,async a=>{
+      try{
+        const r=await ethCall(a.token,(a.kind==='erc20'?'0xdd62ed3e'+pad(owner)+pad(a.spender):'0xe985e9c5'+pad(owner)+pad(a.spender)));
+        const v=BigInt(r);a.cur=a.kind==='erc20'?v:(v>0n?1n:0n);a.live=true;
+      }catch(e){a.cur=a.value;a.live=false}
+    });
+    $('status').textContent='Identifying tokens and spenders…';
+    const toks={},sps={};
+    await chunked([...new Set(cands.map(a=>a.token))],4,async t=>{try{toks[t]=await get('/api/v2/tokens/'+t)}catch(e){}});
+    await chunked([...new Set(cands.map(a=>a.spender))],4,async s=>{try{sps[s]=await get('/api/v2/addresses/'+s)}catch(e){}});
+    cands.forEach(a=>{a.tInfo=toks[a.token];a.sInfo=sps[a.spender];a.risk=riskOf(a)});
+    const active=cands.filter(a=>a.cur>0n);
+    const revoked=cands.filter(a=>a.cur===0n).length;
+    const order={HIGH:0,MEDIUM:1,LOW:2};
+    active.sort((a,b)=>order[a.risk.level]-order[b.risk.level]);
+
+    const events=[];
+    const ownTx=new Set();
+    tx.items.forEach(x=>{
+      const from=lc(x.from&&x.from.hash),to=lc(x.to&&x.to.hash);
+      if(from===owner)ownTx.add(lc(x.hash));
+      const t=x.timestamp?Date.parse(x.timestamp)/1000:0;
+      const out=from===owner;
+      events.push({t,hash:x.hash,out,other:out?to:from,what:(x.method||'transaction')+(x.value&&x.value!=='0'?' · '+fmt(x.value,18)+' ETH':''),failed:x.status==='error'||x.result==='error'});
+    });
+    const coverFrom=tx.more?Math.min(...tx.items.map(x=>x.timestamp?Date.parse(x.timestamp)/1000:Infinity)):0;
+    const outs=[];
+    tr.items.forEach(x=>{
+      const from=lc(x.from&&x.from.hash),to=lc(x.to&&x.to.hash);
+      const tk=x.token||{};const taddr=lc(tk.address_hash||tk.address);
+      const t=x.timestamp?Date.parse(x.timestamp)/1000:0;
+      const hash=x.transaction_hash||x.tx_hash||'';
+      const out=from===owner;
+      const nft=/721|1155/.test(tk.type||'');
+      const amt=nft?'NFT'+(x.total&&x.total.token_id?' #'+String(x.total.token_id).slice(0,12):''):fmt(x.total&&x.total.value,x.total&&x.total.decimals||tk.decimals);
+      const ev={t,hash,out,other:out?to:from,what:(out?'sent ':'received ')+amt+' '+(tk.symbol||tk.name||'token'),token:taddr,sym:tk.symbol||tk.name||'token',amt,tokenTransfer:true};
+      events.push(ev);
+      if(out&&isEOA&&hash&&!ownTx.has(lc(hash))&&t>=coverFrom)outs.push(ev);
+    });
+    events.sort((a,b)=>b.t-a.t);
+    const flagged=outs.slice(0,8);
+    $('status').textContent='Linking approvals to transfers…';
+    await chunked(flagged,3,async ev=>{
+      try{
+        const j=await get('/api/v2/transactions/'+ev.hash);
+        ev.initiator=lc(j.from&&j.from.hash);ev.via=lc(j.to&&j.to.hash);
+        ev.link=all.find(a=>(a.spender===ev.initiator||a.spender===ev.via)&&a.ts<=ev.t&&(a.token===ev.token));
+      }catch(e){}
+    });
+    const linked=flagged.filter(e=>e.link);
+    const F={cls:'good',html:''};
+    if(!isEOA&&info&&info.is_contract){
+      F.cls='';F.html='This address is a smart contract wallet. We can\'t reliably tell self-sent from relayed transactions here, so we are not flagging transfers. Review the approvals and timeline below.';
+    }else if(linked.length){
+      F.cls='bad';
+      const e=linked[0];
+      F.html='<b>Strong evidence of approval abuse.</b> On '+esc(dt(e.link.ts))+' you approved <b>'+esc(short(e.link.spender))+'</b> to use '+esc(e.sym)+'. Later, a transaction started by '+(e.link.spender===e.initiator?'that address':'a contract tied to it')+' moved '+esc(e.amt)+' '+esc(e.sym)+' out of your wallet ('+esc(dt(e.t))+', tx '+esc(short(e.hash))+').'+(linked.length>1?' We found '+linked.length+' transfers like this.':'');
+    }else if(outs.length){
+      F.cls='bad';
+      F.html='<b>Tokens left your wallet in transactions you did not start ('+outs.length+').</b> That can happen through an approval you gave. We could not link them to a specific approval, so we are not naming a culprit.';
+    }else if(active.some(a=>a.risk.level==='HIGH')){
+      F.cls='';F.html='We found no transfers that look taken without you, but there are <b>high-risk permissions still active</b> (below).';
+    }else if(approvalsOK){
+      F.html='Nothing clearly suspicious in the history we could load. This does not prove your wallet is safe: if an attacker has your seed phrase or key, their transactions look like yours.';
+    }else{
+      F.cls='';F.html='We could not load your approval history, so this check is incomplete. See the notes at the bottom.';
+    }
+    S={mode:S.mode,owner,F,active,revoked,events,outs,linked,diag,approvalsOK,isEOA,more:tx.more||tr.more,capped:all.filter(a=>a.value>0n).length>40,toks,sps};
+    S.report=buildReport();
+    render();
+  }catch(e){
+    $('out').innerHTML='<div class="card"><b>Something went wrong.</b><br><span class="mut">'+esc(e.message)+'</span></div>';
+  }
+  $('status').textContent='';$('go').disabled=false;
+}
+function amountText(a){
+  if(a.kind==='all')return 'All items in this collection';
+  if(a.risk.unl)return 'Unlimited';
+  return fmt(a.cur,a.tInfo&&a.tInfo.decimals)+' '+((a.tInfo&&a.tInfo.symbol)||'');
+}
+function nameOf(a){
+  const i=a.sInfo;
+  if(a.spender===PERMIT2)return 'Permit2';
+  if(!i)return 'unknown';
+  return i.name||i.ens_domain_name||(i.is_contract?'contract':'wallet');
+}
+function steps(){
+  const common=[
+    'Stop. Do not sign anything or connect this wallet to any site until you finish these steps.'];
+  const keys=[
+    '<b>Treat this wallet as fully compromised.</b> Create a NEW wallet with a new seed phrase on a clean, trusted device. Never reuse the old phrase.',
+    'Move your most valuable remaining assets to the new wallet right away, biggest first. Attackers often watch for gas you send and sweep it, so move fast and send only what you need.',
+    'Do not rely on revoking approvals. If the attacker has your key, they can act as fast as you can.'];
+  const appr=[
+    'Revoke the approvals marked HIGH first, then MEDIUM. Open <a href="https://revoke.cash" target="_blank" rel="noopener">revoke.cash</a> (type the address yourself, fake copies exist), connect this wallet, choose Base, and revoke.',
+    'If any unlimited approval cannot be revoked in time, move your remaining valuable assets to a fresh wallet.',
+    'Signed "permit" messages are not shown here until they are used. If you signed something strange, moving assets to a fresh wallet is the safest step.'];
+  const tail=[
+    'Save evidence: use "Copy report" below and keep the transaction links.',
+    'If funds went to an exchange address, contact that exchange\'s support quickly with the transaction hashes. Also report to your local cybercrime authority.',
+    'Anyone offering to recover your funds for a fee, or asking for your seed phrase, is a scammer.'];
+  let mid;
+  if(S.mode==='keys')mid=keys;
+  else if(S.mode==='approved')mid=appr;
+  else mid=['Ask yourself: did you ever type your seed phrase or private key into a site, app, or message? If YES, tap "My seed phrase may be exposed" above. If NO, tap "I signed or approved something".'].concat(appr);
+  return common.concat(mid,tail);
+}
+function setMode(m){S.mode=m;renderSteps()}
+function renderSteps(){
+  const c=(m,t)=>'<button class="'+(S.mode===m?'on':'')+'" onclick="setMode(\''+m+'\')">'+t+'</button>';
+  $('steps').innerHTML='<div class="chips">'+c('approved','I signed or approved something')+c('keys','My seed phrase may be exposed')+c('unsure','Not sure')+'</div><ol>'+steps().map(s=>'<li>'+s+'</li>').join('')+'</ol>';
+}
+function buildReport(){
+  const L=[];
+  L.push('AFTERMATH INCIDENT REPORT','Network: Base','Wallet: '+S.owner,'Generated: '+new Date().toISOString(),'');
+  L.push('FINDING: '+S.F.html.replace(/<[^>]+>/g,'').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&amp;/g,'&'),'');
+  L.push('ACTIVE APPROVALS ('+S.active.length+')');
+  S.active.forEach(a=>L.push('- ['+a.risk.level+'] token '+a.token+' -> spender '+a.spender+' ('+nameOf(a)+') · '+amountText(a)+' · approved '+dt(a.ts)+' · tx '+a.tx));
+  L.push('','TRANSFERS OUT NOT STARTED BY THIS WALLET ('+S.outs.length+')');
+  S.outs.forEach(e=>L.push('- '+dt(e.t)+' · '+e.what+' · to '+e.other+' · tx '+e.hash+(e.link?' · LINKED to approval of '+e.link.spender:'')));
+  L.push('','RECENT ACTIVITY');
+  S.events.slice(0,40).forEach(e=>L.push('- '+dt(e.t)+' · '+(e.out?'OUT':'IN')+' · '+e.what+' · '+(e.out?'to ':'from ')+e.other+' · tx '+e.hash));
+  L.push('','Limits: public Base data only; recent history may be incomplete. This report does not prove who is responsible.');
+  return L.join('\n');
+}
+async function copyReport(){
+  try{await navigator.clipboard.writeText(S.report);$('cmsg').textContent='Copied.'}
+  catch(e){
+    try{const ta=document.createElement('textarea');ta.value=S.report;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();$('cmsg').textContent='Copied.'}
+    catch(_){$('cmsg').textContent='Copy failed. Press and hold the text above to copy it.'}
+  }
+}
+async function shareReport(){
+  if(navigator.share){try{await navigator.share({title:'AFTERMATH report',text:S.report})}catch(e){}}
+  else copyReport();
+}
+function render(){
+  let h='<div class="card find '+S.F.cls+'"><h3>What we found</h3>'+S.F.html+'</div>';
+  h+='<div class="card"><h3>Permissions still active ('+S.active.length+')</h3>';
+  if(!S.approvalsOK)h+='<div class="warn">Could not load approval history.</div>';
+  else if(!S.active.length)h+='<div class="mut">No active token permissions found.</div>';
+  S.active.forEach((a,i)=>{
+    const sym=(a.tInfo&&(a.tInfo.symbol||a.tInfo.name))||short(a.token);
+    h+='<div class="row'+(i?'':' first')+'"><span class="pill '+a.risk.level+'">'+a.risk.level+'</span> <b>'+esc(sym)+'</b> → '+esc(nameOf(a))+' <span class="mut">'+esc(short(a.spender))+'</span><br><span class="mut">'+esc(amountText(a))+' · approved '+esc(dt(a.ts))+(a.live?'':' · live check unavailable')+'</span><br>'+a.risk.why.map(esc).join(' · ')+'</div>';
+  });
+  if(S.revoked)h+='<div class="mut" style="margin-top:8px">'+S.revoked+' earlier permission(s) already revoked.</div>';
+  if(S.capped)h+='<div class="warn">Showing the 40 most recent permissions only.</div>';
+  h+='<div class="mut" style="margin-top:8px">Verified does not mean safe. Scam contracts can be verified too.</div></div>';
+  h+='<div class="card"><h3>What to do now</h3><div id="steps"></div></div>';
+  h+='<div class="card"><h3>Recent activity ('+S.events.length+')</h3>';
+  S.events.slice(0,30).forEach((e,i)=>{
+    h+='<div class="row'+(i?'':' first')+'"><b>'+(e.out?'OUT':'IN')+'</b> '+esc(e.what)+(e.failed?' (failed)':'')+'<br><span class="mut">'+esc(dt(e.t))+' · '+(e.out?'to ':'from ')+esc(short(e.other))+' · tx '+esc(short(e.hash))+'</span></div>';
+  });
+  if(S.more)h+='<div class="warn">Older history exists that we did not load.</div>';
+  h+='</div>';
+  h+='<div class="card"><h3>Evidence report</h3><button onclick="copyReport()">Copy report</button><button onclick="shareReport()" style="background:#2a2a35;color:#eee">Share report</button><div id="cmsg" class="mut"></div><pre>'+esc(S.report)+'</pre></div>';
+  if(S.diag.length)h+='<div class="card"><h3>Notes</h3><div class="warn">Some data could not be loaded, so results may be incomplete:<br>'+S.diag.map(esc).join('<br>')+'</div></div>';
+  h+='<p class="mut">AFTERMATH reads public blockchain data only. It cannot recover funds, does not hold keys, and is not legal or financial advice.</p>';
+  $('out').innerHTML=h;
+  renderSteps();
+}
+</script>
+</body></html>
