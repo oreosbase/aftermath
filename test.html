@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Token data test</title>
+<style>
+body{font-family:-apple-system,sans-serif;background:#fff;color:#111;padding:16px;max-width:620px;margin:auto}
+input,button{width:100%;padding:14px;margin:6px 0;font-size:16px;border-radius:10px;box-sizing:border-box}
+input{border:1px solid #ccc}
+button{background:#111;color:#fff;border:0;font-weight:700}
+pre{white-space:pre-wrap;word-break:break-word;font-size:13px;background:#f3f3f5;padding:12px;border-radius:10px}
+</style></head><body>
+<h2>Token data test</h2>
+<input id="a" placeholder="Paste a Base token address (0x...)">
+<button id="b" onclick="run()">Run test</button>
+<pre id="o"></pre>
+<script>
+const out=m=>{document.getElementById('o').textContent+=m+'\n'};
+const BS='https://base.blockscout.com';
+async function get(p){const r=await fetch(BS+p);if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}
+async function t(name,fn){try{out('OK   '+name+': '+await fn())}catch(e){out('FAIL '+name+': '+e.message)}}
+async function rpc(to,data){
+  for(const u of ['https://mainnet.base.org','https://base-rpc.publicnode.com','https://1rpc.io/base']){
+    try{
+      const r=await fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'eth_call',params:[{to,data},'latest']})});
+      const j=await r.json();if(j.error)throw new Error(j.error.message);return j.result;
+    }catch(e){}
+  }
+  throw new Error('all RPCs failed');
+}
+let busy=false;
+async function run(){
+  if(busy)return;busy=true;
+  document.getElementById('o').textContent='';
+  const a=document.getElementById('a').value.trim().toLowerCase();
+  if(!/^0x[0-9a-f]{40}$/.test(a)){out('Not a valid address');busy=false;return}
+  let tok=null,addr=null;
+  await t('A token info',async()=>{tok=await get('/api/v2/tokens/'+a);return [tok.name,tok.symbol,'holders '+tok.holders_count,'supply '+tok.total_supply,'decimals '+tok.decimals,'price '+tok.exchange_rate].join(' | ')});
+  await t('B top holders',async()=>{
+    const j=await get('/api/v2/tokens/'+a+'/holders');
+    const items=j.items||[];
+    if(!items.length)return '0 holders returned';
+    const sup=BigInt(tok&&tok.total_supply?tok.total_supply:'0');
+    const top=items.slice(0,3).map(x=>(x.address&&x.address.hash?x.address.hash.slice(0,8):'?')+' '+(sup>0n?(Number(BigInt(x.value)*10000n/sup)/100)+'%':'?')).join(', ');
+    return items.length+' returned | top3: '+top;
+  });
+  await t('C contract code',async()=>{
+    const j=await get('/api/v2/smart-contracts/'+a);
+    const names=(j.abi||[]).filter(x=>x.type==='function').map(x=>x.name);
+    const risky=names.filter(n=>/mint|blacklist|blocklist|pause|owner|tax|fee|setfee/i.test(n));
+    return 'verified '+j.is_verified+' | '+names.length+' functions | risky names: '+(risky.join(', ')||'none');
+  });
+  await t('D creator info',async()=>{addr=await get('/api/v2/addresses/'+a);return 'creator '+addr.creator_address_hash+' | creation tx '+addr.creation_transaction_hash});
+  await t('E creation date',async()=>{const j=await get('/api/v2/transactions/'+addr.creation_transaction_hash);return j.timestamp});
+  await t('F owner() call',async()=>{const r=await rpc(a,'0x8da5cb5b');return r==='0x'?'no owner() function':'0x'+r.slice(26)});
+  out('Done.');busy=false;
+}
+</script></body></html>
