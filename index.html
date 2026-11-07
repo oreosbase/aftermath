@@ -57,7 +57,7 @@ input:focus{border-color:#0b0b0f;box-shadow:0 0 0 4px rgba(11,11,15,.08)}
 .row{padding:12px 0;border-top:1px solid var(--line);font-size:14px;word-break:break-word}
 .list .row:first-child{border-top:0;padding-top:2px}
 .pill{display:inline-block;padding:2px 9px;border-radius:99px;font-size:10.5px;font-weight:800;letter-spacing:.06em;vertical-align:1px}
-.HIGH{background:var(--bad);color:#fff}.MEDIUM{background:#fbbf24;color:#3b2a00}.LOW{background:#e5e7eb;color:#374151}.SPAM{background:#e5e7eb;color:#6b7280}
+.OKP{background:#0b0b0f;color:#fff}.HIGH{background:var(--bad);color:#fff}.MEDIUM{background:#fbbf24;color:#3b2a00}.LOW{background:#e5e7eb;color:#374151}.SPAM{background:#e5e7eb;color:#6b7280}
 .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
 .mut{color:var(--mut);font-size:13px}
 .why{font-size:13px;color:#3f3f4a;margin-top:2px}
@@ -79,12 +79,15 @@ pre{white-space:pre-wrap;word-break:break-word;font-size:12px;color:#4b4b57;back
 <header class="hero">
 <div class="logo"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 4.5-3.2 8-8 9-4.8-1-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg></div>
 <h1>AFTERMATH</h1>
-<p class="tag">Wallet recovery assistant for Base</p>
+<p class="tag">Scan any wallet or token on Base</p>
 </header>
 <section class="panel">
-<label class="lbl" for="addr">Public wallet address</label>
+<div class="seg"><button id="t_wallet" class="on" onclick="setTab('wallet')">Check a wallet</button><button id="t_token" onclick="setTab('token')">Scan a token</button></div>
+<p id="tabdesc" class="hint" style="margin:0 0 12px"></p>
+<label class="lbl" id="lbl" for="addr">Wallet address</label>
 <input id="addr" placeholder="0x…" autocomplete="off" autocapitalize="off" spellcheck="false">
-<button id="go" class="btn" onclick="run()">Investigate</button>
+<button id="go" class="btn" onclick="run()">Check wallet</button>
+<button id="ex" class="ghost hide" onclick="useEx()">Try an example token (USDC)</button>
 <p id="msg" class="hint">Public data only. Never enter a seed phrase or private key.</p>
 <div id="bar" class="bar"></div>
 </section>
@@ -102,6 +105,22 @@ const MAX=2n**255n;
 const HX=/^0x[0-9a-fA-F]{64}$/;
 const PSTEPS=[['wallet','Checking wallet'],['tx','Reading transactions'],['tr','Reading token transfers'],['appr','Finding approvals'],['live','Checking live permissions'],['link','Linking evidence']];
 let S={mode:'unsure',showSpam:false};
+let TAB='wallet';
+const TABS={
+  wallet:{label:'Wallet address',ph:'Your wallet address (0x…)',btn:'Check wallet',desc:'Find out if your wallet was drained, which permissions are risky, and what to do next.'},
+  token:{label:'Token contract address',ph:'Token contract address (0x…)',btn:'Scan token',desc:'Check a token for warning signs before you buy: holders, contract code, owner and age.'}
+};
+function setTab(t){
+  TAB=t;
+  $('t_wallet').className=t==='wallet'?'on':'';
+  $('t_token').className=t==='token'?'on':'';
+  $('lbl').textContent=TABS[t].label;
+  $('addr').placeholder=TABS[t].ph;
+  $('tabdesc').textContent=TABS[t].desc;
+  $('go').textContent=TABS[t].btn;
+  if(t==='token')$('ex').classList.remove('hide');else $('ex').classList.add('hide');
+}
+function useEx(){$('addr').value='0x833589fCD6eDb6E08f4c7C32D4f71b54bDA02913';setMsg('Example loaded. Tap Scan token.',false)}
 const short=a=>a?a.slice(0,6)+'…'+a.slice(-4):'?';
 const dt=ts=>ts?new Date(ts*1000).toISOString().slice(0,16).replace('T',' ')+' UTC':'unknown time';
 const pad=a=>'0'.repeat(24)+a.slice(2).toLowerCase();
@@ -173,8 +192,8 @@ function riskOf(a){
   if(!why.length)why.push('limited permission to a verified contract');
   return {level,why,unl};
 }
-function initProg(){
-  $('plist').innerHTML=PSTEPS.map(s=>'<li id="p_'+s[0]+'"><i></i>'+s[1]+'</li>').join('');
+function initProg(list){
+  $('plist').innerHTML=(list||PSTEPS).map(s=>'<li id="p_'+s[0]+'"><i></i>'+s[1]+'</li>').join('');
   $('prog').classList.remove('hide');
 }
 function mark(id,st){const e=$('p_'+id);if(e)e.className=st}
@@ -183,13 +202,26 @@ async function run(){
   const owner=lc($('addr').value.trim());
   if(!/^0x[0-9a-f]{40}$/.test(owner)){setMsg('That does not look like a valid address (0x followed by 40 characters).',true);return}
   setMsg('Public data only. Never enter a seed phrase or private key.',false);
-  $('go').disabled=true;$('go').textContent='Investigating…';$('bar').classList.add('on');$('out').innerHTML='';initProg();
+  $('go').disabled=true;$('go').textContent='Working…';$('bar').classList.add('on');$('out').innerHTML='';
+  let info0=null;
+  try{info0=await get('/api/v2/addresses/'+owner)}catch(e){}
+  if(info0&&info0.is_contract===true){
+    let tk=null;
+    try{const j=await get('/api/v2/tokens/'+owner);if(j&&/20/.test(j.type||''))tk=j}catch(e){}
+    if(tk){
+      if(TAB!=='token'){setTab('token');setMsg('That address is a token, so we scanned it as a token.',false)}
+      try{await runToken(owner,info0,tk)}catch(e){$('out').innerHTML='<section class="panel"><b>Something went wrong.</b><div class="mut">'+esc(e.message)+'</div></section>'}
+      finish();return;
+    }
+  }
+  initProg(PSTEPS);
+  if(TAB==='token'){setTab('wallet');setMsg('That address is a wallet, not a token, so we ran the wallet check.',false)}
   const diag=[];
   const task=async(id,name,fn,d)=>{mark(id,'run');try{const v=await fn();mark(id,'ok');return v}catch(e){diag.push(name+' ('+e.message+')');mark(id,'err');return d}};
   try{
     const E={items:[],more:false};
     const [info,tx,tr,ap]=await Promise.all([
-      task('wallet','Wallet check',()=>get('/api/v2/addresses/'+owner),null),
+      task('wallet','Wallet check',()=>info0||get('/api/v2/addresses/'+owner),null),
       task('tx','Transactions',()=>pages('/api/v2/addresses/'+owner+'/transactions',3),E),
       task('tr','Token transfers',()=>pages('/api/v2/addresses/'+owner+'/token-transfers',3),E),
       task('appr','Approval history',async()=>{const r=await Promise.all([getLogs(APPROVAL,owner),getLogs(APPALL,owner)]);return {a:r[0],b:r[1]}},null)
@@ -293,9 +325,112 @@ async function run(){
   }catch(e){
     $('out').innerHTML='<section class="panel"><b>Something went wrong.</b><div class="mut">'+esc(e.message)+'</div></section>';
   }
+  finish();
+}
+
+const DEAD=['0x0000000000000000000000000000000000000000','0x000000000000000000000000000000000000dead'];
+const PT=[['tok','Reading token'],['hold','Checking holders'],['code','Reading contract code'],['own','Checking owner and age']];
+const addrLink=h=>/^0x[0-9a-fA-F]{40}$/.test(h||'')?'<a class="link" href="https://basescan.org/address/'+h+'" target="_blank" rel="noopener">'+short(h)+'</a>':esc(short(h));
+function finish(){
   $('prog').classList.add('hide');$('bar').classList.remove('on');
-  $('go').disabled=false;$('go').textContent='Investigate';
+  $('go').disabled=false;$('go').textContent=TABS[TAB].btn;
   if($('out').scrollIntoView)$('out').scrollIntoView({behavior:'smooth',block:'start'});
+}
+async function runToken(a,info,tk){
+  initProg(PT);mark('tok','ok');mark('own','run');
+  const diag=[];
+  const task=async(id,name,fn,d)=>{mark(id,'run');try{const v=await fn();mark(id,'ok');return v}catch(e){diag.push(name+' ('+e.message+')');mark(id,'err');return d}};
+  const [hold,code,created]=await Promise.all([
+    task('hold','Holders',()=>get('/api/v2/tokens/'+a+'/holders'),null),
+    task('code','Contract code',()=>get('/api/v2/smart-contracts/'+a).catch(e=>{if(/404/.test(e.message))return {is_verified:false,abi:null};throw e}),null),
+    (async()=>{try{if(!info.creation_transaction_hash)return null;const j=await get('/api/v2/transactions/'+info.creation_transaction_hash);return j.timestamp?Date.parse(j.timestamp)/1000:null}catch(e){diag.push('Creation date ('+e.message+')');return null}})()
+  ]);
+  const names=code&&Array.isArray(code.abi)?code.abi.filter(x=>x.type==='function').map(x=>x.name):[];
+  let ownerAddr=null,ownerInfo=null;
+  if(names.includes('owner')){
+    try{const r=await ethCall(a,'0x8da5cb5b');ownerAddr=r&&r.length>=66?'0x'+r.slice(26,66).toLowerCase():null}catch(e){}
+    if(ownerAddr&&!DEAD.includes(ownerAddr)){try{ownerInfo=await get('/api/v2/addresses/'+ownerAddr)}catch(e){}}
+  }
+  mark('own','ok');
+  const sig=[];const add=(lvl,t,d)=>sig.push({lvl,t,d});
+  if(code&&code.is_verified)add('OK','Contract source is verified','Anyone can read what the contract does.');
+  else if(code||info.is_verified===false)add('HIGH','Contract source is not verified','We cannot read what this contract is able to do.');
+  else add('LOW','Could not read the contract code','The data service did not return it.');
+  let supply=0n;try{supply=BigInt(tk.total_supply||'0')}catch(e){}
+  const rows=[];
+  if(hold&&hold.items)hold.items.forEach(x=>{
+    const h=lc(x.address&&x.address.hash);let v=0n;try{v=BigInt(x.value||'0')}catch(e){}
+    rows.push({h,pct:supply>0n?Number(v*10000n/supply)/100:0,burn:DEAD.includes(h),self:h===a,contract:!!(x.address&&x.address.is_contract),name:(x.address&&(x.address.name||x.address.ens_domain_name))||''});
+  });
+  const live=rows.filter(r=>!r.burn&&!r.self);
+  const eoa=live.filter(r=>!r.contract);
+  const top1=eoa.length?eoa.reduce((m,r)=>r.pct>m.pct?r:m,eoa[0]):null;
+  const top10=eoa.slice(0,10).reduce((n,r)=>n+r.pct,0);
+  if(rows.length&&supply>0n){
+    if(top1&&top1.pct>=20)add('HIGH','One regular wallet holds '+top1.pct+'% of the supply','If it sells, the price can collapse. Wallet '+short(top1.h)+'.');
+    else if(top1&&top1.pct>=10)add('MEDIUM','One regular wallet holds '+top1.pct+'% of the supply','Wallet '+short(top1.h)+'.');
+    else add('OK','No single regular wallet holds 10% or more','Among the top 50 holders we could load.');
+    if(top10>=60)add('HIGH','Top regular wallets hold '+Math.round(top10)+'% together','Supply is concentrated in a few hands.');
+    else if(top10>=40)add('MEDIUM','Top regular wallets hold '+Math.round(top10)+'% together','Supply is fairly concentrated.');
+    const cs=live.slice(0,10).filter(r=>r.contract).length;
+    if(cs)add('LOW',cs===1?'1 of the top 10 holders is a contract':cs+' of the top 10 holders are contracts','Often pools, bridges or vaults. We cannot tell which.');
+  }else add('LOW','Holder data unavailable','We could not measure holder concentration.');
+  const has=re=>names.filter(n=>re.test(n));
+  const mint=has(/mint/i),bl=has(/blacklist|blocklist|denylist/i),ps=has(/pause/i),fee=has(/(set|update|change)\w*(fee|tax)/i);
+  if(mint.length)add('MEDIUM','Has a mint function','The supply may be increasable by whoever has permission. We cannot tell who that is.');
+  if(bl.length)add('MEDIUM','Can block addresses','Some wallets could be stopped from sending.');
+  if(ps.length)add('MEDIUM','Can pause transfers','Trading could be frozen.');
+  if(fee.length)add('MEDIUM','Fees or taxes can be changed','Costs to trade could change after you buy.');
+  if(names.length&&!mint.length&&!bl.length&&!ps.length&&!fee.length)add('OK','No mint, block, pause or fee functions spotted','Based on the public contract interface.');
+  if(names.includes('owner')){
+    if(ownerAddr&&DEAD.includes(ownerAddr))add('OK','Ownership renounced','No wallet holds the owner role.');
+    else if(ownerAddr){const isC=ownerInfo&&ownerInfo.is_contract;add(isC?'LOW':'MEDIUM',isC?'Owner is a contract':'One regular wallet is the owner',(isC?'It could be a multisig or timelock. ':'A single wallet controls the owner role. ')+short(ownerAddr)+'.')}
+    else add('LOW','Could not read the owner','');
+  }
+  if((info.implementations||[]).length)add('LOW','Upgradeable contract','Its code can be swapped by an admin. Check who controls upgrades.');
+  if(created){
+    const days=(Date.now()/1000-created)/86400;
+    const txt=days<1?'less than a day':Math.floor(days)+' days';
+    if(days<3)add('HIGH','Very new token','Created '+txt+' ago.');
+    else if(days<14)add('MEDIUM','New token','Created '+txt+' ago.');
+    else add('OK','Created '+txt+' ago','');
+  }
+  const hc=Number(tk.holders_count||0);
+  if(hc&&hc<100)add('MEDIUM','Very few holders','Only '+hc+' wallets hold it.');
+  if(tk.exchange_rate==null)add('LOW','No market price listed','Common for new or small tokens. Price and liquidity were not checked.');
+  const order={HIGH:0,MEDIUM:1,LOW:2,OK:3};
+  sig.sort((x,y)=>order[x.lvl]-order[y.lvl]);
+  const nH=sig.filter(x=>x.lvl==='HIGH').length,nM=sig.filter(x=>x.lvl==='MEDIUM').length;
+  const sym=tk.symbol||tk.name||'token';
+  const note='<p>Checked: contract source, holder concentration, admin functions, owner, age. <b>Not checked:</b> liquidity locks, honeypot behavior, hidden taxes in code, and the team. A clean result is not a guarantee.</p>';
+  let F;
+  if(nH)F={cls:'bad',title:'High risk signals',html:nH+' high and '+nM+' medium risk signal'+(nH+nM===1?'':'s')+' found for '+esc(sym)+'. Read them below before you buy.'+note};
+  else if(nM)F={cls:'warn',title:'Some risk signals',html:nM+' medium risk signal'+(nM===1?'':'s')+' found for '+esc(sym)+'. Not alarming alone, but worth understanding.'+note};
+  else F={cls:'good',title:'No red flags we can check',html:'We found nothing alarming in what a public scan can see for '+esc(sym)+'.'+note};
+  const flags=sig.filter(x=>x.lvl==='HIGH'||x.lvl==='MEDIUM').slice(0,4);
+  const share='AFTERMATH scan: '+sym+' on Base\n'+F.title+' ('+nH+' high, '+nM+' medium)\n'+flags.map(x=>'- '+x.t).join('\n')+(flags.length?'\n':'')+'Scan yours: '+location.origin+location.pathname;
+  const L=['AFTERMATH TOKEN REPORT','Network: Base','Token: '+(tk.name||'')+' ('+sym+')','Contract: '+a,'Generated: '+new Date().toISOString(),'','RESULT: '+F.title+' ('+nH+' high, '+nM+' medium)','','SIGNALS'];
+  sig.forEach(x=>L.push('- ['+x.lvl+'] '+x.t+(x.d?': '+x.d:'')));
+  L.push('','TOP HOLDERS');
+  rows.slice(0,10).forEach(r=>L.push('- '+r.h+' '+r.pct+'%'+(r.burn?' (burn)':r.self?' (token contract)':r.contract?' (contract'+(r.name?': '+r.name:'')+')':'')));
+  L.push('','Limits: public Base data only. Not checked: liquidity locks, honeypot behavior, hidden taxes, team. Not financial advice.');
+  S={mode:S.mode,showSpam:false,T:{a,sym,F,sig,rows,diag},report:L.join('\n'),share};
+  renderToken();
+}
+function renderToken(){
+  const T=S.T;let i=0;const D=()=>'style="--i:'+(i++)+'"';
+  let h='<section class="panel verdict '+T.F.cls+'" '+D()+'><div class="ico">'+({good:'✓',warn:'!',bad:'✕'}[T.F.cls])+'</div><div><p class="vt">'+esc(T.F.title)+'</p><div class="vb">'+T.F.html+'</div></div></section>';
+  h+='<section class="panel" '+D()+'><h2 class="sec">Signals · '+T.sig.length+'</h2><div class="list">';
+  T.sig.forEach(x=>{h+='<div class="row"><span class="pill '+(x.lvl==='OK'?'OKP':x.lvl)+'">'+x.lvl+'</span> <b>'+esc(x.t)+'</b>'+(x.d?'<div class="why">'+esc(x.d)+'</div>':'')+'</div>'});
+  h+='</div></section>';
+  h+='<section class="panel" '+D()+'><details><summary>Top holders <span class="mut">'+Math.min(T.rows.length,10)+'</span></summary><div class="list" style="margin-top:10px">';
+  T.rows.slice(0,10).forEach(r=>{h+='<div class="row"><b>'+r.pct+'%</b> · '+addrLink(r.h)+' <span class="mut">'+(r.burn?'burn address':r.self?'the token contract itself':r.contract?'contract'+(r.name?' · '+esc(r.name):''):'regular wallet')+'</span></div>'});
+  if(!T.rows.length)h+='<div class="mut">No holder data.</div>';
+  h+='</div></details></section>';
+  h+='<section class="panel" '+D()+'><h2 class="sec">Share</h2><div class="grid2"><button class="btn" onclick="copyShare()">Copy for X</button><button class="btn alt" onclick="copyReport()">Copy report</button></div><p id="cmsg" class="hint"></p><details style="margin-top:6px"><summary>Preview</summary><pre>'+esc(S.share)+'</pre></details></section>';
+  if(T.diag.length)h+='<section class="panel" '+D()+'><h2 class="sec">Notes</h2><div class="hint">Some data could not be loaded:<br>'+T.diag.map(esc).join('<br>')+'</div></section>';
+  h+='<p class="foot">AFTERMATH reads public blockchain data only. It does not predict prices and is not financial advice.</p>';
+  $('out').innerHTML=h;
 }
 function amountText(a){
   if(a.kind==='all')return 'All items in this collection';
@@ -348,13 +483,15 @@ function buildReport(){
   L.push('','Limits: public Base data only; recent history may be incomplete. This report does not prove who is responsible.');
   return L.join('\n');
 }
-async function copyReport(){
-  try{await navigator.clipboard.writeText(S.report);$('cmsg').textContent='Copied to clipboard.'}
+async function copyTxt(t){
+  try{await navigator.clipboard.writeText(t);$('cmsg').textContent='Copied to clipboard.'}
   catch(e){
-    try{const ta=document.createElement('textarea');ta.value=S.report;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();$('cmsg').textContent='Copied to clipboard.'}
+    try{const ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();$('cmsg').textContent='Copied to clipboard.'}
     catch(_){$('cmsg').textContent='Copy failed. Open the preview, then press and hold the text to copy it.'}
   }
 }
+function copyReport(){return copyTxt(S.report)}
+function copyShare(){return copyTxt(S.share)}
 async function shareReport(){
   if(navigator.share){try{await navigator.share({title:'AFTERMATH report',text:S.report})}catch(e){}}
   else copyReport();
@@ -394,5 +531,6 @@ function render(){
   $('out').innerHTML=h;
   renderSteps();
 }
+setTab('wallet');
 </script>
 </body></html>
