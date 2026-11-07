@@ -82,7 +82,7 @@ pre{white-space:pre-wrap;word-break:break-word;font-size:12px;color:#4b4b57;back
 <p class="tag">Scan any wallet or token on Base</p>
 </header>
 <section class="panel">
-<div class="seg"><button id="t_wallet" class="on" onclick="setTab('wallet')">Check a wallet</button><button id="t_token" onclick="setTab('token')">Scan a token</button></div>
+<div class="seg"><button id="t_wallet" class="on" onclick="setTab('wallet',true)">Check a wallet</button><button id="t_token" onclick="setTab('token',true)">Scan a token</button></div>
 <p id="tabdesc" class="hint" style="margin:0 0 12px"></p>
 <label class="lbl" id="lbl" for="addr">Wallet address</label>
 <input id="addr" placeholder="0x…" autocomplete="off" autocapitalize="off" spellcheck="false">
@@ -110,7 +110,8 @@ const TABS={
   wallet:{label:'Wallet address',ph:'Your wallet address (0x…)',btn:'Check wallet',desc:'Find out if your wallet was drained, which permissions are risky, and what to do next.'},
   token:{label:'Token contract address',ph:'Token contract address (0x…)',btn:'Scan token',desc:'Check a token for warning signs before you buy: holders, contract code, owner and age.'}
 };
-function setTab(t){
+function setTab(t,manual){
+  const changed=t!==TAB;
   TAB=t;
   $('t_wallet').className=t==='wallet'?'on':'';
   $('t_token').className=t==='token'?'on':'';
@@ -119,6 +120,10 @@ function setTab(t){
   $('tabdesc').textContent=TABS[t].desc;
   $('go').textContent=TABS[t].btn;
   if(t==='token')$('ex').classList.remove('hide');else $('ex').classList.add('hide');
+  if(manual&&changed){
+    $('out').innerHTML='';$('addr').value='';$('prog').classList.add('hide');
+    setMsg('Public data only. Never enter a seed phrase or private key.',false);
+  }
 }
 function useEx(){$('addr').value='0x833589fCD6eDb6E08f4c7C32D4f71b54bDA02913';setMsg('Example loaded. Tap Scan token.',false)}
 const short=a=>a?a.slice(0,6)+'…'+a.slice(-4):'?';
