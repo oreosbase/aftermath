@@ -266,7 +266,7 @@ async function run(){
       if((!x.value||x.value==='0')&&trHashes.has(h))return;
       const t=x.timestamp?Date.parse(x.timestamp)/1000:0;
       const out=from===owner;
-      events.push({t,hash:x.hash,out,other:out?to:from,what:(x.method||'transaction')+(x.value&&x.value!=='0'?' · '+fmt(x.value,18)+' ETH':''),failed:x.status==='error'||x.result==='error'});
+      events.push({t,hash:x.hash,out,eth:!!(x.value&&x.value!=='0'),other:out?to:from,what:(x.method||'transaction')+(x.value&&x.value!=='0'?' · '+fmt(x.value,18)+' ETH':''),failed:x.status==='error'||x.result==='error'});
     });
     const coverFrom=tx.more?Math.min(...tx.items.map(x=>x.timestamp?Date.parse(x.timestamp)/1000:Infinity)):0;
     tr.items.forEach(x=>{
@@ -306,6 +306,26 @@ async function run(){
     const unverified=flagged.filter(e=>!e.initiator).length+tp.filter(e=>e.paid===undefined).length;
     const linked=suspect.filter(e=>e.link);
     const evl=suspect.length?'<div class="evl">'+suspect.slice(0,5).map(e=>'<div>'+esc(e.what)+' · '+esc(dt(e.t))+' · started by <span class="mono">'+esc(short(e.initiator))+'</span> · '+txLink(e.hash)+'</div>').join('')+'</div>':'';
+    const ethBal=info&&info.coin_balance!=null?fmt(info.coin_balance,18):null;
+    const times=events.map(e=>e.t).filter(Boolean);
+    const low=(tx.items.length+tr.items.length)<3&&!tx.more&&!tr.more;
+    const moves=events.filter(e=>e.out&&!e.zero&&(e.eth||(e.token!==undefined&&ownTx.has(lc(e.hash)))));
+    const byTo={};
+    moves.forEach(m=>{if(m.other)(byTo[m.other]=byTo[m.other]||[]).push(m)});
+    let sweep=null;
+    Object.keys(byTo).forEach(to=>{
+      if(sweep)return;
+      const arr=byTo[to].slice().sort((p,q)=>p.t-q.t);
+      for(let k=0;k+2<arr.length;k++){
+        if(arr[k+2].t-arr[k].t<=900){
+          const start=arr[k].t;
+          if(events.some(e=>e.other===to&&e.t<start-3600))break;
+          const items=arr.filter(m=>m.t>=start&&m.t<=start+900);
+          sweep={to,items};break;
+        }
+      }
+    });
+    const evs=sweep?'<div class="evl">'+sweep.items.slice(0,5).map(e=>'<div>'+esc(e.what)+' · '+esc(dt(e.t))+' · to <span class="mono">'+esc(short(e.other))+'</span> · '+txLink(e.hash)+'</div>').join('')+'</div>':'';
     let F;
     if(info&&info.is_contract===true){
       F={cls:'warn',title:'Smart contract wallet',html:'This address is a smart contract wallet. We can\'t reliably tell self-sent from relayed transactions here, so we are not flagging transfers. Review the permissions below.'};
@@ -314,8 +334,13 @@ async function run(){
       F={cls:'bad',title:'Approval abuse detected',html:'On '+esc(dt(e.link.ts))+' you approved <b>'+esc(short(e.link.spender))+'</b> to use '+esc(e.sym)+'. Later, a transaction started by '+(e.link.spender===e.initiator?'that address':'a contract tied to it')+' moved '+esc(e.amt)+' '+esc(e.sym)+' out of your wallet ('+esc(dt(e.t))+', tx '+esc(short(e.hash))+').'+(linked.length>1?' We found '+linked.length+' transfers like this.':'')+evl};
     }else if(suspect.length){
       F={cls:'bad',title:'Unexplained transfers',html:suspect.length+' of the '+flagged.length+' most recent priced transfers we checked'+(outs.length>flagged.length?' (out of '+outs.length+')':'')+' were started by a different address than yours, with no payment to you in the same transaction. That can happen through an approval you gave. We could not link them to a specific approval, so we are not naming a culprit.'+evl};
+    }else if(sweep){
+      const span=Math.max(1,Math.round((sweep.items[sweep.items.length-1].t-sweep.items[0].t)/60));
+      F={cls:'warn',title:'Possible wallet sweep',html:sweep.items.length+' transfers left this wallet within about '+span+' minute'+(span===1?'':'s')+', all to one address ('+esc(short(sweep.to))+') this wallet had not dealt with before. That pattern fits an attacker who has this wallet\'s keys or permissions, but it can also be you moving funds to a new wallet. If you did not do this, treat the wallet as compromised.'+evs};
     }else if(active.some(a=>a.risk.level==='HIGH')){
       F={cls:'warn',title:'High-risk permissions active',html:'We found no transfers that look taken without you, but some permissions are still active and look risky (below).'};
+    }else if(low){
+      F={cls:'warn',title:'Little or no activity on Base',html:'We found only '+tx.items.length+' transaction'+(tx.items.length===1?'':'s')+' and '+tr.items.length+' token transfer'+(tr.items.length===1?'':'s')+' on Base for this address. AFTERMATH reads Base only. If this wallet was drained on Ethereum or another network, it will not show up here. Check it on that network\'s explorer.'};
     }else if(approvalsOK){
       F={cls:'good',title:'No drain found',html:'Nothing clearly suspicious in the history we could load. This does not prove your wallet is safe: if an attacker has your seed phrase or key, their transactions look like yours.'};
     }else{
@@ -324,6 +349,7 @@ async function run(){
     if(paidTx.length)F.html+='<p>'+paidTx.length+' transfer'+(paidTx.length===1?'':'s')+' started by other addresses came with a payment to you in the same transaction (this looks like a sale or swap), so we did not flag '+(paidTx.length===1?'it':'them')+'.</p>';
     if(unverified)F.html+='<p>We could not double-check '+unverified+' transfer(s) because the data service was busy.</p>';
     if(spoof)F.html+='<p><b>Heads up:</b> we saw '+spoof+' transfer'+(spoof===1?'':'s')+' of zero-value, unpriced or look-alike tokens that appear to come from your address, but none were sent by your wallet. This is usually address poisoning or spam. Never copy an address from your transaction history.</p>';
+    F.html+='<p class="mut">Scanned on Base: '+tx.items.length+' transaction'+(tx.items.length===1?'':'s')+' and '+tr.items.length+' token transfer'+(tr.items.length===1?'':'s')+(times.length?' from '+dt(Math.min(...times))+' to '+dt(Math.max(...times)):'')+(ethBal!==null?'. ETH balance now: '+ethBal:'')+'.'+(tx.more||tr.more?' Older history exists that we did not load.':'')+'</p>';
     S={mode:S.mode,showSpam:false,owner,F,active,revoked,events,outs:suspect,linked,diag,approvalsOK,spoof,spamCount:events.filter(e=>e.spam).length,more:tx.more||tr.more,capped:all.filter(a=>a.value>0n).length>40};
     S.report=buildReport();
     render();
