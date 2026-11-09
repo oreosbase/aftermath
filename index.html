@@ -377,7 +377,8 @@ Review the active permissions below.`};
 <b>AFTERMATH only checks the Base network.</b><br>
 If this wallet was drained on Ethereum or any other chain, it will <b>not</b> show up here. Check the wallet on that network’s explorer instead.`};
     }else if(approvalsOK&&!dataFail){
-      F={cls:'good',title:'No drain found',html:'Nothing clearly suspicious in the history we could load on Base. This does not prove your wallet is safe: if an attacker has your seed phrase or key, their transactions look like yours.'};
+      F={cls:'good',title:'No drain found',html:`Nothing clearly suspicious in the history we could load <b>on Base</b>.<br><br>
+AFTERMATH only checks the Base network. A drain that happened on Ethereum or any other chain will not appear here.`};
     }else{
       F={cls:'warn',title:'Incomplete check',html:'Part of this wallet’s history could not be loaded because the free public data service was slow or rate-limited (common on heavy wallets).<br><br>Results may be incomplete. See the Notes section below for details.'};
     }
