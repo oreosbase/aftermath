@@ -137,10 +137,10 @@ async function get(path,ms){
   const u=path.startsWith('http')?path:BS+path;
   for(let i=0;i<2;i++){
     const ctl=new AbortController();
-    const to=setTimeout(()=>ctl.abort(),ms||12000);
+    const to=setTimeout(()=>ctl.abort(),ms||10000);
     try{
       const r=await fetch(u,{signal:ctl.signal});
-      if(r.status===429&&i===0){clearTimeout(to);await new Promise(z=>setTimeout(z,1200));continue}
+      if(r.status===429&&i===0){clearTimeout(to);await new Promise(z=>setTimeout(z,900));continue}
       if(!r.ok)throw new Error('HTTP '+r.status);
       const j=await r.json();
       clearTimeout(to);
@@ -154,10 +154,11 @@ async function get(path,ms){
 async function pages(path,max){
   let items=[],q='',more=false;
   const t0=Date.now();
+  max = max || 2;
   for(let i=0;i<max;i++){
-    if(i>0&&Date.now()-t0>20000){more=true;break}
+    if(i>0&&Date.now()-t0>14000){more=true;break}
     let j;
-    try{j=await get(path+(q?(path.includes('?')?'&':'?')+q:''))}
+    try{j=await get(path+(q?(path.includes('?')?'&':'?')+q:''),9000)}
     catch(e){if(i===0)throw e;more=true;break}
     items=items.concat(j.items||[]);
     if(j.next_page_params){q=new URLSearchParams(j.next_page_params).toString();more=true}else{more=false;break}
@@ -168,7 +169,7 @@ async function ethCall(to,data){
   let err;
   for(const u of RPCS){
     const ctl=new AbortController();
-    const to2=setTimeout(()=>ctl.abort(),8000);
+    const to2=setTimeout(()=>ctl.abort(),7000);
     try{
       const r=await fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'eth_call',params:[{to,data},'latest']}),signal:ctl.signal});
       const j=await r.json();
@@ -180,7 +181,7 @@ async function ethCall(to,data){
   throw err;
 }
 async function getLogs(topic0,owner){
-  const j=await get('/api?module=logs&action=getLogs&fromBlock=0&toBlock=latest&topic0='+topic0+'&topic1=0x'+pad(owner)+'&topic0_1_opr=and',25000);
+  const j=await get('/api?module=logs&action=getLogs&fromBlock=0&toBlock=latest&topic0='+topic0+'&topic1=0x'+pad(owner)+'&topic0_1_opr=and',18000);
   if(!Array.isArray(j.result))throw new Error('unexpected reply');
   return j.result;
 }
@@ -218,7 +219,7 @@ function mkTask(diag){
   return async(id,name,fn,d)=>{
     mark(id,'run');let to;
     try{
-      const v=await Promise.race([fn(),new Promise((_,rej)=>{to=setTimeout(()=>rej(new Error('timed out')),40000)})]);
+      const v=await Promise.race([fn(),new Promise((_,rej)=>{to=setTimeout(()=>rej(new Error('timed out')),28000)})]);
       clearTimeout(to);mark(id,'ok');return v;
     }catch(e){clearTimeout(to);diag.push(name+' ('+e.message+')');mark(id,'err');return d}
   };
@@ -235,12 +236,12 @@ async function run(){
   if(!/^0x[0-9a-f]{40}$/.test(owner)){setMsg('That does not look like a valid address (0x followed by 40 characters).',true);return}
   setMsg('Public data only. Never enter a seed phrase or private key.',false);
   $('go').disabled=true;$('go').textContent='Working…';$('bar').classList.add('on');$('out').innerHTML='';
-  clearTimeout(slowT);slowT=setTimeout(()=>{if($('go').disabled)setMsg('Still working. The free data service is slow right now. Results will appear soon, even if some parts time out.',false)},15000);
+  clearTimeout(slowT);slowT=setTimeout(()=>{if($('go').disabled)setMsg('Still working. The free data service is slow right now. Results will appear soon, even if some parts time out.',false)},12000);
   let info0=null;
-  try{info0=await get('/api/v2/addresses/'+owner)}catch(e){}
+  try{info0=await get('/api/v2/addresses/'+owner,8000)}catch(e){}
   if(info0&&info0.is_contract===true){
     let tk=null;
-    try{const j=await get('/api/v2/tokens/'+owner);if(j&&/20/.test(j.type||''))tk=j}catch(e){}
+    try{const j=await get('/api/v2/tokens/'+owner,8000);if(j&&/20/.test(j.type||''))tk=j}catch(e){}
     if(tk){
       if(TAB!=='token'){setTab('token');setMsg('That address is a token, so we scanned it as a token.',false)}
       try{await runToken(owner,info0,tk)}catch(e){$('out').innerHTML='<section class="panel"><b>Something went wrong.</b><div class="mut">'+esc(e.message)+'</div></section>'}
@@ -253,28 +254,29 @@ async function run(){
   const task=mkTask(diag);
   try{
     const E={items:[],more:false};
-    const [info,tx,tr,ap]=await Promise.all([
-      task('wallet','Wallet check',()=>info0||get('/api/v2/addresses/'+owner),null),
-      task('tx','Transactions',()=>pages('/api/v2/addresses/'+owner+'/transactions',3),E),
-      task('tr','Token transfers',()=>pages('/api/v2/addresses/'+owner+'/token-transfers',3),E),
-      task('appr','Approval history',async()=>{const r=await Promise.all([getLogs(APPROVAL,owner),getLogs(APPALL,owner)]);return {a:r[0],b:r[1]}},null)
+    // Prioritize: wallet + approvals + transactions first. Token transfers are more expensive.
+    const [info,tx,ap,tr]=await Promise.all([
+      task('wallet','Wallet check',()=>info0||get('/api/v2/addresses/'+owner,8000),null),
+      task('tx','Transactions',()=>pages('/api/v2/addresses/'+owner+'/transactions',2),E),
+      task('appr','Approval history',async()=>{const r=await Promise.all([getLogs(APPROVAL,owner),getLogs(APPALL,owner)]);return {a:r[0],b:r[1]}},null),
+      task('tr','Token transfers',()=>pages('/api/v2/addresses/'+owner+'/token-transfers',2),E)
     ]);
     const isEOA=!!info&&info.is_contract===false;
     const approvalsOK=!!ap;
     const all=approvalsOK?parseApprovals(ap.a,ap.b):[];
-    const cands=all.filter(a=>a.value>0n).sort((a,b)=>b.ts-a.ts).slice(0,40);
+    const cands=all.filter(a=>a.value>0n).sort((a,b)=>b.ts-a.ts).slice(0,30);
     mark('live','run');
     const toks={},sps={};
     await within(Promise.all([
-      chunked(cands,6,async a=>{
+      chunked(cands,5,async a=>{
         try{
           const r=await ethCall(a.token,(a.kind==='erc20'?'0xdd62ed3e'+pad(owner)+pad(a.spender):'0xe985e9c5'+pad(owner)+pad(a.spender)));
           const v=BigInt(r);a.cur=a.kind==='erc20'?v:(v>0n?1n:0n);a.live=true;
         }catch(e){a.cur=a.value;a.live=false}
       }),
-      chunked([...new Set(cands.map(a=>a.token))],6,async t=>{try{toks[t]=await get('/api/v2/tokens/'+t)}catch(e){}}),
-      chunked([...new Set(cands.map(a=>a.spender))],6,async s=>{try{sps[s]=await get('/api/v2/addresses/'+s)}catch(e){}})
-    ]),25000);
+      chunked([...new Set(cands.map(a=>a.token))],5,async t=>{try{toks[t]=await get('/api/v2/tokens/'+t,7000)}catch(e){}}),
+      chunked([...new Set(cands.map(a=>a.spender))],5,async s=>{try{sps[s]=await get('/api/v2/addresses/'+s,7000)}catch(e){}})
+    ]),20000);
     cands.forEach(a=>{if(a.cur===undefined){a.cur=a.value;a.live=false}});
     mark('live','ok');
     cands.forEach(a=>{a.tInfo=toks[a.token];a.sInfo=sps[a.spender];a.risk=riskOf(a)});
@@ -314,20 +316,20 @@ async function run(){
     });
     events.sort((a,b)=>b.t-a.t);
     mark('link','run');
-    const flagged=outs.slice(0,12);
-    await within(chunked(flagged,6,async ev=>{
+    const flagged=outs.slice(0,10);
+    await within(chunked(flagged,5,async ev=>{
       try{
-        const j=await get('/api/v2/transactions/'+ev.hash);
+        const j=await get('/api/v2/transactions/'+ev.hash,8000);
         ev.initiator=lc(j.from&&j.from.hash);ev.via=lc(j.to&&j.to.hash);
         ev.link=all.find(a=>(a.spender===ev.initiator||a.spender===ev.via)&&a.ts<=ev.t&&a.token===ev.token);
       }catch(e){return}
       if(ev.initiator===owner)return;
       const inTr=tr.items.some(x=>lc(x.transaction_hash||x.tx_hash)===lc(ev.hash)&&lc(x.to&&x.to.hash)===owner&&lc(x.from&&x.from.hash)!==owner&&isPriced(x.token||{})&&x.total&&x.total.value&&!/^0+$/.test(String(x.total.value)));
       try{
-        const k=await get('/api/v2/transactions/'+ev.hash+'/internal-transactions');
+        const k=await get('/api/v2/transactions/'+ev.hash+'/internal-transactions',7000);
         ev.paid=inTr||(k.items||[]).some(y=>lc(y.to&&y.to.hash)===owner&&y.value&&y.value!=='0');
       }catch(e){ev.paid=inTr?true:undefined}
-    }),20000);
+    }),16000);
     mark('link','ok');
     const tp=flagged.filter(e=>e.initiator&&e.initiator!==owner);
     const paidTx=tp.filter(e=>e.paid===true);
@@ -380,7 +382,7 @@ async function run(){
     if(unverified)F.html+='<p>We could not double-check '+unverified+' transfer(s) because the data service was busy.</p>';
     if(spoof)F.html+='<p><b>Heads up:</b> we saw '+spoof+' transfer'+(spoof===1?'':'s')+' of zero-value, unpriced or look-alike tokens that appear to come from your address, but none were sent by your wallet. This is usually address poisoning or spam. Never copy an address from your transaction history.</p>';
     F.html+='<p class="mut">Scanned on Base: '+tx.items.length+' transaction'+(tx.items.length===1?'':'s')+' and '+tr.items.length+' token transfer'+(tr.items.length===1?'':'s')+(times.length?' from '+dt(Math.min(...times))+' to '+dt(Math.max(...times)):'')+(ethBal!==null?'. ETH balance now: '+ethBal:'')+'.'+(tx.more||tr.more?' Older history exists that we did not load.':'')+'</p>';
-    S={mode:S.mode,showSpam:false,owner,F,active,revoked,events,outs:suspect,linked,diag,approvalsOK,spoof,spamCount:events.filter(e=>e.spam).length,more:tx.more||tr.more,capped:all.filter(a=>a.value>0n).length>40};
+    S={mode:S.mode,showSpam:false,owner,F,active,revoked,events,outs:suspect,linked,diag,approvalsOK,spoof,spamCount:events.filter(e=>e.spam).length,more:tx.more||tr.more,capped:all.filter(a=>a.value>0n).length>30};
     S.report=buildReport();
     render();
   }catch(e){
@@ -403,15 +405,15 @@ async function runToken(a,info,tk){
   const diag=[];
   const task=mkTask(diag);
   const [hold,code,created]=await Promise.all([
-    task('hold','Holders',()=>get('/api/v2/tokens/'+a+'/holders'),null),
-    task('code','Contract code',()=>get('/api/v2/smart-contracts/'+a).catch(e=>{if(/404/.test(e.message))return {is_verified:false,abi:null};throw e}),null),
-    (async()=>{try{if(!info.creation_transaction_hash)return null;const j=await get('/api/v2/transactions/'+info.creation_transaction_hash);return j.timestamp?Date.parse(j.timestamp)/1000:null}catch(e){diag.push('Creation date ('+e.message+')');return null}})()
+    task('hold','Holders',()=>get('/api/v2/tokens/'+a+'/holders',9000),null),
+    task('code','Contract code',()=>get('/api/v2/smart-contracts/'+a,9000).catch(e=>{if(/404/.test(e.message))return {is_verified:false,abi:null};throw e}),null),
+    (async()=>{try{if(!info.creation_transaction_hash)return null;const j=await get('/api/v2/transactions/'+info.creation_transaction_hash,8000);return j.timestamp?Date.parse(j.timestamp)/1000:null}catch(e){diag.push('Creation date ('+e.message+')');return null}})()
   ]);
   const names=code&&Array.isArray(code.abi)?code.abi.filter(x=>x.type==='function').map(x=>x.name):[];
   let ownerAddr=null,ownerInfo=null;
   if(names.includes('owner')){
     try{const r=await ethCall(a,'0x8da5cb5b');ownerAddr=r&&r.length>=66?'0x'+r.slice(26,66).toLowerCase():null}catch(e){}
-    if(ownerAddr&&!DEAD.includes(ownerAddr)){try{ownerInfo=await get('/api/v2/addresses/'+ownerAddr)}catch(e){}}
+    if(ownerAddr&&!DEAD.includes(ownerAddr)){try{ownerInfo=await get('/api/v2/addresses/'+ownerAddr,7000)}catch(e){}}
   }
   mark('own','ok');
   const sig=[];const add=(lvl,t,d)=>sig.push({lvl,t,d});
@@ -583,7 +585,7 @@ function render(){
   });
   h+='</div>';
   if(S.revoked)h+='<p class="hint">'+S.revoked+' earlier permission(s) already revoked.</p>';
-  if(S.capped)h+='<p class="hint">Showing the 40 most recent permissions only.</p>';
+  if(S.capped)h+='<p class="hint">Showing the 30 most recent permissions only.</p>';
   h+='<p class="hint">Verified does not mean safe. Scam contracts can be verified too.</p></section>';
   h+='<section class="panel" '+D()+'><h2 class="sec">What to do now</h2><div id="steps"></div></section>';
   h+='<section class="panel" '+D()+'><details><summary>Recent activity <span class="mut">'+S.events.filter(e=>!e.spam).length+'</span></summary><div id="tl" style="margin-top:10px">'+tlHTML()+'</div></details></section>';
