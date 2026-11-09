@@ -254,7 +254,6 @@ async function run(){
   const task=mkTask(diag);
   try{
     const E={items:[],more:false};
-    // Prioritize: wallet + approvals + transactions first. Token transfers are more expensive.
     const [info,tx,ap,tr]=await Promise.all([
       task('wallet','Wallet check',()=>info0||get('/api/v2/addresses/'+owner,8000),null),
       task('tx','Transactions',()=>pages('/api/v2/addresses/'+owner+'/transactions',2),E),
@@ -360,7 +359,9 @@ async function run(){
     const evs=sweep?'<div class="evl">'+sweep.items.slice(0,5).map(e=>'<div>'+esc(e.what)+' · '+esc(dt(e.t))+' · to <span class="mono">'+esc(short(e.other))+'</span> · '+txLink(e.hash)+'</div>').join('')+'</div>':'';
     let F;
     if(info&&info.is_contract===true){
-      F={cls:'warn',title:'Smart contract wallet',html:'This address is a smart contract wallet. We can\'t reliably tell self-sent from relayed transactions here, so we are not flagging transfers. Review the permissions below.'};
+      F={cls:'warn',title:'Smart contract wallet',html:`This address is a smart contract wallet.<br><br>
+AFTERMATH cannot reliably tell the difference between transactions you started and ones that were relayed through the contract, so we do <b>not</b> flag transfers as drains.<br><br>
+Review the active permissions below.`};
     }else if(linked.length){
       const e=linked[0];
       F={cls:'bad',title:'Approval abuse detected',html:'On '+esc(dt(e.link.ts))+' you approved <b>'+esc(short(e.link.spender))+'</b> to use '+esc(e.sym)+'. Later, a transaction started by '+(e.link.spender===e.initiator?'that address':'a contract tied to it')+' moved '+esc(e.amt)+' '+esc(e.sym)+' out of your wallet ('+esc(dt(e.t))+', tx '+esc(short(e.hash))+').'+(linked.length>1?' We found '+linked.length+' transfers like this.':'')+evl};
@@ -376,7 +377,7 @@ async function run(){
     }else if(approvalsOK&&!dataFail){
       F={cls:'good',title:'No drain found',html:'Nothing clearly suspicious in the history we could load. This does not prove your wallet is safe: if an attacker has your seed phrase or key, their transactions look like yours.'};
     }else{
-      F={cls:'warn',title:'Incomplete check',html:(dataFail?'The free data service was slow or busy, so part of this wallet\'s history did not load. Try again in a minute. Details are in the notes below.':'We could not load your approval history, so this check is incomplete. See the notes at the bottom.')};
+      F={cls:'warn',title:'Incomplete check',html:'Part of this wallet’s history could not be loaded because the free public data service was slow or rate-limited (common on heavy wallets).<br><br>Results may be incomplete. See the Notes section below for details.'};
     }
     if(paidTx.length)F.html+='<p>'+paidTx.length+' transfer'+(paidTx.length===1?'':'s')+' started by other addresses came with a payment to you in the same transaction (this looks like a sale or swap), so we did not flag '+(paidTx.length===1?'it':'them')+'.</p>';
     if(unverified)F.html+='<p>We could not double-check '+unverified+' transfer(s) because the data service was busy.</p>';
@@ -590,7 +591,13 @@ function render(){
   h+='<section class="panel" '+D()+'><h2 class="sec">What to do now</h2><div id="steps"></div></section>';
   h+='<section class="panel" '+D()+'><details><summary>Recent activity <span class="mut">'+S.events.filter(e=>!e.spam).length+'</span></summary><div id="tl" style="margin-top:10px">'+tlHTML()+'</div></details></section>';
   h+='<section class="panel" '+D()+'><h2 class="sec">Evidence report</h2><div class="grid2"><button class="btn" onclick="copyReport()">Copy report</button><button class="btn alt" onclick="shareReport()">Share</button></div><p id="cmsg" class="hint"></p><details style="margin-top:6px"><summary>Preview</summary><pre>'+esc(S.report)+'</pre></details></section>';
-  if(S.diag.length)h+='<section class="panel" '+D()+'><h2 class="sec">Notes</h2><div class="hint">Some data could not be loaded, so results may be incomplete:<br>'+S.diag.map(esc).join('<br>')+'</div></section>';
+  if(S.diag.length){
+    let noteText = 'Some data could not be loaded, so results may be incomplete:<br>' + S.diag.map(esc).join('<br>');
+    if(S.diag.some(d => /token transfers/i.test(d))){
+      noteText += '<br><br>This often happens on busy or heavy wallets because the free public data service is rate-limited. The rest of the scan still completed.';
+    }
+    h+='<section class="panel" '+D()+'><h2 class="sec">Notes</h2><div class="hint">'+noteText+'</div></section>';
+  }
   h+='<p class="foot">AFTERMATH reads public blockchain data only. It cannot recover funds, does not hold keys, and is not legal or financial advice.</p>';
   $('out').innerHTML=h;
   renderSteps();
