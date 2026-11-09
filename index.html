@@ -339,7 +339,7 @@ async function run(){
     const ethBal=info&&info.coin_balance!=null?fmt(info.coin_balance,18):null;
     const times=events.map(e=>e.t).filter(Boolean);
     const dataFail=diag.some(d=>/^(Transactions|Token transfers|Approval history)/.test(d));
-    const low=(tx.items.length+tr.items.length)<3&&!tx.more&&!tr.more&&!dataFail;
+    const low=(tx.items.length+tr.items.length)<4&&!tx.more&&!tr.more;
     const moves=events.filter(e=>e.out&&!e.zero&&(e.eth||(e.token!==undefined&&ownTx.has(lc(e.hash)))));
     const byTo={};
     moves.forEach(m=>{if(m.other)(byTo[m.other]=byTo[m.other]||[]).push(m)});
@@ -373,9 +373,11 @@ Review the active permissions below.`};
     }else if(active.some(a=>a.risk.level==='HIGH')){
       F={cls:'warn',title:'High-risk permissions active',html:'We found no transfers that look taken without you, but some permissions are still active and look risky (below).'};
     }else if(low){
-      F={cls:'warn',title:'Little or no activity on Base',html:'We found only '+tx.items.length+' transaction'+(tx.items.length===1?'':'s')+' and '+tr.items.length+' token transfer'+(tr.items.length===1?'':'s')+' on Base for this address. AFTERMATH reads Base only. If this wallet was drained on Ethereum or another network, it will not show up here. Check it on that network\'s explorer.'};
+      F={cls:'warn',title:'Little or no activity on Base',html:`We found only ${tx.items.length} transaction${tx.items.length===1?'':'s'} and ${tr.items.length} token transfer${tr.items.length===1?'':'s'} on Base for this address.<br><br>
+<b>AFTERMATH only checks the Base network.</b><br>
+If this wallet was drained on Ethereum or any other chain, it will <b>not</b> show up here. Check the wallet on that network’s explorer instead.`};
     }else if(approvalsOK&&!dataFail){
-      F={cls:'good',title:'No drain found',html:'Nothing clearly suspicious in the history we could load. This does not prove your wallet is safe: if an attacker has your seed phrase or key, their transactions look like yours.'};
+      F={cls:'good',title:'No drain found',html:'Nothing clearly suspicious in the history we could load on Base. This does not prove your wallet is safe: if an attacker has your seed phrase or key, their transactions look like yours.'};
     }else{
       F={cls:'warn',title:'Incomplete check',html:'Part of this wallet’s history could not be loaded because the free public data service was slow or rate-limited (common on heavy wallets).<br><br>Results may be incomplete. See the Notes section below for details.'};
     }
