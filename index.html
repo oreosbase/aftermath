@@ -132,19 +132,33 @@ const pad=a=>'0'.repeat(24)+a.slice(2).toLowerCase();
 const lc=s=>(s||'').toLowerCase();
 const txLink=h=>HX.test(h||'')?'<a class="link" href="https://basescan.org/tx/'+h+'" target="_blank" rel="noopener">'+short(h)+'</a>':esc(short(h));
 function fmt(v,d){try{v=BigInt(v);d=Number(d||0);const s=v.toString().padStart(d+1,'0');const i=s.slice(0,s.length-d);const f=s.slice(s.length-d).replace(/0+$/,'').slice(0,6);return i+(f?'.'+f:'')}catch(e){return '?'}}
-async function get(path){
+const within=(p,ms)=>Promise.race([p,new Promise(r=>setTimeout(r,ms))]);
+async function get(path,ms){
   const u=path.startsWith('http')?path:BS+path;
   for(let i=0;i<2;i++){
-    const r=await fetch(u);
-    if(r.status===429&&i===0){await new Promise(z=>setTimeout(z,700));continue}
-    if(!r.ok)throw new Error('HTTP '+r.status);
-    return r.json();
+    const ctl=new AbortController();
+    const to=setTimeout(()=>ctl.abort(),ms||12000);
+    try{
+      const r=await fetch(u,{signal:ctl.signal});
+      if(r.status===429&&i===0){clearTimeout(to);await new Promise(z=>setTimeout(z,1200));continue}
+      if(!r.ok)throw new Error('HTTP '+r.status);
+      const j=await r.json();
+      clearTimeout(to);
+      return j;
+    }catch(e){
+      clearTimeout(to);
+      throw new Error(e.name==='AbortError'?'timed out':e.message);
+    }
   }
 }
 async function pages(path,max){
   let items=[],q='',more=false;
+  const t0=Date.now();
   for(let i=0;i<max;i++){
-    const j=await get(path+(q?(path.includes('?')?'&':'?')+q:''));
+    if(i>0&&Date.now()-t0>20000){more=true;break}
+    let j;
+    try{j=await get(path+(q?(path.includes('?')?'&':'?')+q:''))}
+    catch(e){if(i===0)throw e;more=true;break}
     items=items.concat(j.items||[]);
     if(j.next_page_params){q=new URLSearchParams(j.next_page_params).toString();more=true}else{more=false;break}
   }
@@ -153,17 +167,20 @@ async function pages(path,max){
 async function ethCall(to,data){
   let err;
   for(const u of RPCS){
+    const ctl=new AbortController();
+    const to2=setTimeout(()=>ctl.abort(),8000);
     try{
-      const r=await fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'eth_call',params:[{to,data},'latest']})});
+      const r=await fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'eth_call',params:[{to,data},'latest']}),signal:ctl.signal});
       const j=await r.json();
+      clearTimeout(to2);
       if(j.error)throw new Error(j.error.message);
       return j.result;
-    }catch(e){err=e}
+    }catch(e){clearTimeout(to2);err=e}
   }
   throw err;
 }
 async function getLogs(topic0,owner){
-  const j=await get('/api?module=logs&action=getLogs&fromBlock=0&toBlock=latest&topic0='+topic0+'&topic1=0x'+pad(owner)+'&topic0_1_opr=and');
+  const j=await get('/api?module=logs&action=getLogs&fromBlock=0&toBlock=latest&topic0='+topic0+'&topic1=0x'+pad(owner)+'&topic0_1_opr=and',25000);
   if(!Array.isArray(j.result))throw new Error('unexpected reply');
   return j.result;
 }
@@ -197,6 +214,16 @@ function riskOf(a){
   if(!why.length)why.push('limited permission to a verified contract');
   return {level,why,unl};
 }
+function mkTask(diag){
+  return async(id,name,fn,d)=>{
+    mark(id,'run');let to;
+    try{
+      const v=await Promise.race([fn(),new Promise((_,rej)=>{to=setTimeout(()=>rej(new Error('timed out')),40000)})]);
+      clearTimeout(to);mark(id,'ok');return v;
+    }catch(e){clearTimeout(to);diag.push(name+' ('+e.message+')');mark(id,'err');return d}
+  };
+}
+let slowT=null;
 function initProg(list){
   $('plist').innerHTML=(list||PSTEPS).map(s=>'<li id="p_'+s[0]+'"><i></i>'+s[1]+'</li>').join('');
   $('prog').classList.remove('hide');
@@ -208,6 +235,7 @@ async function run(){
   if(!/^0x[0-9a-f]{40}$/.test(owner)){setMsg('That does not look like a valid address (0x followed by 40 characters).',true);return}
   setMsg('Public data only. Never enter a seed phrase or private key.',false);
   $('go').disabled=true;$('go').textContent='Working…';$('bar').classList.add('on');$('out').innerHTML='';
+  clearTimeout(slowT);slowT=setTimeout(()=>{if($('go').disabled)setMsg('Still working. The free data service is slow right now. Results will appear soon, even if some parts time out.',false)},15000);
   let info0=null;
   try{info0=await get('/api/v2/addresses/'+owner)}catch(e){}
   if(info0&&info0.is_contract===true){
@@ -222,7 +250,7 @@ async function run(){
   initProg(PSTEPS);
   if(TAB==='token'){setTab('wallet');setMsg('That address is a wallet, not a token, so we ran the wallet check.',false)}
   const diag=[];
-  const task=async(id,name,fn,d)=>{mark(id,'run');try{const v=await fn();mark(id,'ok');return v}catch(e){diag.push(name+' ('+e.message+')');mark(id,'err');return d}};
+  const task=mkTask(diag);
   try{
     const E={items:[],more:false};
     const [info,tx,tr,ap]=await Promise.all([
@@ -237,7 +265,7 @@ async function run(){
     const cands=all.filter(a=>a.value>0n).sort((a,b)=>b.ts-a.ts).slice(0,40);
     mark('live','run');
     const toks={},sps={};
-    await Promise.all([
+    await within(Promise.all([
       chunked(cands,6,async a=>{
         try{
           const r=await ethCall(a.token,(a.kind==='erc20'?'0xdd62ed3e'+pad(owner)+pad(a.spender):'0xe985e9c5'+pad(owner)+pad(a.spender)));
@@ -246,7 +274,8 @@ async function run(){
       }),
       chunked([...new Set(cands.map(a=>a.token))],6,async t=>{try{toks[t]=await get('/api/v2/tokens/'+t)}catch(e){}}),
       chunked([...new Set(cands.map(a=>a.spender))],6,async s=>{try{sps[s]=await get('/api/v2/addresses/'+s)}catch(e){}})
-    ]);
+    ]),25000);
+    cands.forEach(a=>{if(a.cur===undefined){a.cur=a.value;a.live=false}});
     mark('live','ok');
     cands.forEach(a=>{a.tInfo=toks[a.token];a.sInfo=sps[a.spender];a.risk=riskOf(a)});
     const active=cands.filter(a=>a.cur>0n);
@@ -286,7 +315,7 @@ async function run(){
     events.sort((a,b)=>b.t-a.t);
     mark('link','run');
     const flagged=outs.slice(0,12);
-    await chunked(flagged,6,async ev=>{
+    await within(chunked(flagged,6,async ev=>{
       try{
         const j=await get('/api/v2/transactions/'+ev.hash);
         ev.initiator=lc(j.from&&j.from.hash);ev.via=lc(j.to&&j.to.hash);
@@ -298,7 +327,7 @@ async function run(){
         const k=await get('/api/v2/transactions/'+ev.hash+'/internal-transactions');
         ev.paid=inTr||(k.items||[]).some(y=>lc(y.to&&y.to.hash)===owner&&y.value&&y.value!=='0');
       }catch(e){ev.paid=inTr?true:undefined}
-    });
+    }),20000);
     mark('link','ok');
     const tp=flagged.filter(e=>e.initiator&&e.initiator!==owner);
     const paidTx=tp.filter(e=>e.paid===true);
@@ -308,7 +337,8 @@ async function run(){
     const evl=suspect.length?'<div class="evl">'+suspect.slice(0,5).map(e=>'<div>'+esc(e.what)+' · '+esc(dt(e.t))+' · started by <span class="mono">'+esc(short(e.initiator))+'</span> · '+txLink(e.hash)+'</div>').join('')+'</div>':'';
     const ethBal=info&&info.coin_balance!=null?fmt(info.coin_balance,18):null;
     const times=events.map(e=>e.t).filter(Boolean);
-    const low=(tx.items.length+tr.items.length)<3&&!tx.more&&!tr.more;
+    const dataFail=diag.some(d=>/^(Transactions|Token transfers|Approval history)/.test(d));
+    const low=(tx.items.length+tr.items.length)<3&&!tx.more&&!tr.more&&!dataFail;
     const moves=events.filter(e=>e.out&&!e.zero&&(e.eth||(e.token!==undefined&&ownTx.has(lc(e.hash)))));
     const byTo={};
     moves.forEach(m=>{if(m.other)(byTo[m.other]=byTo[m.other]||[]).push(m)});
@@ -341,10 +371,10 @@ async function run(){
       F={cls:'warn',title:'High-risk permissions active',html:'We found no transfers that look taken without you, but some permissions are still active and look risky (below).'};
     }else if(low){
       F={cls:'warn',title:'Little or no activity on Base',html:'We found only '+tx.items.length+' transaction'+(tx.items.length===1?'':'s')+' and '+tr.items.length+' token transfer'+(tr.items.length===1?'':'s')+' on Base for this address. AFTERMATH reads Base only. If this wallet was drained on Ethereum or another network, it will not show up here. Check it on that network\'s explorer.'};
-    }else if(approvalsOK){
+    }else if(approvalsOK&&!dataFail){
       F={cls:'good',title:'No drain found',html:'Nothing clearly suspicious in the history we could load. This does not prove your wallet is safe: if an attacker has your seed phrase or key, their transactions look like yours.'};
     }else{
-      F={cls:'warn',title:'Incomplete check',html:'We could not load your approval history, so this check is incomplete. See the notes at the bottom.'};
+      F={cls:'warn',title:'Incomplete check',html:(dataFail?'The free data service was slow or busy, so part of this wallet\'s history did not load. Try again in a minute. Details are in the notes below.':'We could not load your approval history, so this check is incomplete. See the notes at the bottom.')};
     }
     if(paidTx.length)F.html+='<p>'+paidTx.length+' transfer'+(paidTx.length===1?'':'s')+' started by other addresses came with a payment to you in the same transaction (this looks like a sale or swap), so we did not flag '+(paidTx.length===1?'it':'them')+'.</p>';
     if(unverified)F.html+='<p>We could not double-check '+unverified+' transfer(s) because the data service was busy.</p>';
@@ -363,6 +393,7 @@ const DEAD=['0x0000000000000000000000000000000000000000','0x00000000000000000000
 const PT=[['tok','Reading token'],['hold','Checking holders'],['code','Reading contract code'],['own','Checking owner and age']];
 const addrLink=h=>/^0x[0-9a-fA-F]{40}$/.test(h||'')?'<a class="link" href="https://basescan.org/address/'+h+'" target="_blank" rel="noopener">'+short(h)+'</a>':esc(short(h));
 function finish(){
+  clearTimeout(slowT);
   $('prog').classList.add('hide');$('bar').classList.remove('on');
   $('go').disabled=false;$('go').textContent=TABS[TAB].btn;
   if($('out').scrollIntoView)$('out').scrollIntoView({behavior:'smooth',block:'start'});
@@ -370,7 +401,7 @@ function finish(){
 async function runToken(a,info,tk){
   initProg(PT);mark('tok','ok');mark('own','run');
   const diag=[];
-  const task=async(id,name,fn,d)=>{mark(id,'run');try{const v=await fn();mark(id,'ok');return v}catch(e){diag.push(name+' ('+e.message+')');mark(id,'err');return d}};
+  const task=mkTask(diag);
   const [hold,code,created]=await Promise.all([
     task('hold','Holders',()=>get('/api/v2/tokens/'+a+'/holders'),null),
     task('code','Contract code',()=>get('/api/v2/smart-contracts/'+a).catch(e=>{if(/404/.test(e.message))return {is_verified:false,abi:null};throw e}),null),
